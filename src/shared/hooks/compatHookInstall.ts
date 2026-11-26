@@ -368,8 +368,9 @@ export function inspectCompatHookConfig(
   const moduleSpec = compatHookModuleSpec(flavourId, paths);
   if (moduleSpec) {
     const asset = inspectLifecycleAsset(moduleSpec);
-    // With no shipped module to compare against, a wmux copy is still wmux's.
-    if (asset.state === 'source-missing') {
+    // With no shipped module to compare against, a wmux copy is still wmux's;
+    // and a copy that differs is wmux's only by its first line.
+    if (asset.state === 'source-missing' || asset.state === 'stale') {
       return { state: inspectOwnedModuleWithoutSource(moduleSpec), configPath };
     }
     return { state: moduleConfigState(asset.state), configPath };
@@ -392,6 +393,13 @@ export function inspectCompatHookConfig(
   return { state: JSON.stringify(parsed) === wanted ? 'current' : 'stale', configPath };
 }
 
+/** A module is wmux's when its first line is a wmux marker comment; a
+ *  user's own module that merely mentions the marker elsewhere is not. */
+function ownsByFirstLine(text: string, markers: readonly string[]): boolean {
+  const first = text.replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0].trim();
+  return markers.some((marker) => first === `// ${marker}`);
+}
+
 /** A module copy judged by its marker alone (no shipped source to compare). */
 function inspectOwnedModuleWithoutSource(spec: LifecycleAssetSpec): CompatHookConfigState {
   let text: string;
@@ -400,7 +408,7 @@ function inspectOwnedModuleWithoutSource(spec: LifecycleAssetSpec): CompatHookCo
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'malformed';
   }
-  return spec.ownershipMarkers.some((marker) => text.includes(marker)) ? 'stale' : 'foreign';
+  return ownsByFirstLine(text, spec.ownershipMarkers) ? 'stale' : 'foreign';
 }
 
 /** `node <bridge>` is the only form an omp-style module runs. */

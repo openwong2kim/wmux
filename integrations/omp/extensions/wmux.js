@@ -27,10 +27,11 @@
 //   * Main session only: omp rebinds extensions to every subagent, whose
 //     turn ends are not the pane's.
 //   * Bridge runs are queued, so the daemon sees events in the order omp
-//     fired them. A run starts inside the handler whenever none is pending,
-//     and session_shutdown always does: omp may exit as soon as its handlers
-//     return (print mode exits right after agent_end), so anything left for
-//     later would be lost.
+//     fired them. A run starts inside the handler whenever none is pending:
+//     omp may exit as soon as its handlers return (print mode exits right
+//     after agent_end), so anything left for later would be lost. omp waits
+//     up to 2s for a session_shutdown handler, so that one drains the runs
+//     already accepted (for at most SHUTDOWN_DRAIN_MS) before session_end.
 //   * The payload reaches the bridge's stdin from a file, not a pipe: it is
 //     there before the bridge starts, so it survives omp exiting at once.
 //
@@ -46,6 +47,8 @@ const FLAVOUR = 'omp';
 const BRIDGE_BASENAME = 'wmux-hooks-bridge.mjs';
 // The bridge caps itself at 2s; a run that outlives this no longer holds the queue.
 const RUN_WAIT_MS = 3000;
+// Under omp's 2s session_shutdown handler timeout, with room to start the last run.
+const SHUTDOWN_DRAIN_MS = 1500;
 
 /** The omp events this module forwards. Each is mapped in the bridge's `omp` row. */
 export const EVENTS = [
@@ -87,7 +90,7 @@ export function createWmuxExtension({
     if (!env.WMUX_PTY_ID) return;
     let queue = Promise.resolve();
     let pending = 0;
-    // After session_shutdown a run still queued would land after session_end.
+    // Once session_end is sent, a run still queued would land after it.
     let closed = false;
 
     /** Starts one bridge run now; resolves when it is over (or has had its time). */
@@ -138,8 +141,18 @@ export function createWmuxExtension({
           if (!forwards(name, event, ctx)) return;
           const payload = { session_id: sessionIdOf(ctx), cwd: typeof ctx?.cwd === 'string' ? ctx.cwd : undefined };
           pending += 1;
-          if (name === 'session_shutdown') closed = true;
-          if (pending === 1 || name === 'session_shutdown') {
+          if (name === 'session_shutdown') {
+            // Returned, so omp waits: the runs it already accepted go first,
+            // then session_end; whatever is still queued after the bound is dropped.
+            let timer;
+            const bound = new Promise((resolve) => { timer = setTimeout(resolve, SHUTDOWN_DRAIN_MS); });
+            return Promise.race([queue, bound]).then(() => {
+              clearTimeout(timer);
+              closed = true;
+              queue = run(name, payload).then(settled);
+            });
+          }
+          if (pending === 1) {
             queue = run(name, payload).then(settled);
           } else {
             queue = queue.then(() => run(name, payload)).then(settled);

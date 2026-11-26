@@ -55,7 +55,8 @@ describe('omp extension install', () => {
     expect(statusCompatHooks('omp', paths).config).toBe('stale');
     expect(await installCompatHooks('omp', paths)).toMatchObject({ ok: true, action: 'refreshed', before: 'stale' });
 
-    const mine = 'export default (pi) => pi.on("agent_end", () => {});\n';
+    // Naming the marker anywhere but the first line does not make it wmux's.
+    const mine = 'export default (pi) => pi.on("agent_end", () => {});\n// not a wmux-managed: omp-extension\n';
     fs.writeFileSync(moduleFile(), mine);
     expect(await installCompatHooks('omp', paths)).toMatchObject({ ok: false, before: 'foreign' });
     expect(removeCompatHooks('omp', paths)).toMatchObject({ removed: false, before: 'foreign' });

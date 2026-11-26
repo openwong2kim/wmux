@@ -26,7 +26,7 @@ import {
   type WmuxCopy,
 } from '../uninstallIntegrations';
 
-const ENV_KEYS = ['HOME', 'USERPROFILE', 'WMUX_DATA_SUFFIX', 'WMUX_MCP_REGISTER_EXTERNAL', 'CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME'];
+const ENV_KEYS = ['HOME', 'USERPROFILE', 'WMUX_DATA_SUFFIX', 'WMUX_MCP_REGISTER_EXTERNAL', 'CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'PI_CODING_AGENT_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME'];
 const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 let saved: Record<string, string | undefined>;
 let home: string;
@@ -108,6 +108,8 @@ function installEverything(): { accountSettings: string } {
   installStatusline(statuslinePaths([{ label: 'work', settingsPath: accountSettings }]), { force: true });
 
   write(at('.copilot', 'hooks', 'wmux.json'), JSON.stringify(buildOwnedHookFile('copilot', at('.wmux', 'hooks', 'wmux-hooks-bridge.mjs'))));
+  write(at('.omp', 'agent', 'extensions', 'wmux.js'), '// wmux-managed: omp-extension\nexport default () => {};\n');
+  write(at('.omp', 'agent', 'extensions', 'mine.js'), 'export default () => {};\n');
 
   const configRoot = at('.config', 'opencode');
   write(path.join(configRoot, 'tui.json'), JSON.stringify({ plugin: ['my-plugin'], theme: 'x' }));
@@ -177,6 +179,8 @@ describe('removeAgentIntegrations', () => {
     expect(readJson(at('.gemini', 'config', 'mcp_config.json')).mcpServers).toBeUndefined();
     expect(readJson(at('.gemini', 'antigravity-cli', 'settings.json')).statusLine).toBeUndefined();
     expect(fs.existsSync(at('.copilot', 'hooks', 'wmux.json'))).toBe(false);
+    expect(fs.existsSync(at('.omp', 'agent', 'extensions', 'wmux.js'))).toBe(false);
+    expect(fs.existsSync(at('.omp', 'agent', 'extensions', 'mine.js'))).toBe(true);
 
     const configRoot = at('.config', 'opencode');
     expect(fs.existsSync(path.join(configRoot, 'plugins', 'wmux.js'))).toBe(false);

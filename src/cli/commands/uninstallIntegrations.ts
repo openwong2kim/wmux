@@ -373,9 +373,11 @@ function planSteps(opts: RemoveAgentIntegrationsOptions): Step[] {
 
   const compatPaths = resolveCompatHookPaths(home, opts.startDir, env);
   for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
-    if (COMPAT_HOOK_FLAVOURS[id].install?.strategy !== 'owned-file') continue;
+    const strategy = COMPAT_HOOK_FLAVOURS[id].install?.strategy;
+    if (strategy !== 'owned-file' && strategy !== 'owned-module') continue;
     const file = compatHookConfigPath(id, compatPaths) ?? '';
-    steps.push({ agent: agentRow(id)?.display ?? id, item: 'hook file', path: file, sharedSlot: true, run: () => removeOwnedHookFile(id, opts) });
+    // removeCompatHooks deletes a module only when its first line is wmux's marker.
+    steps.push({ agent: agentRow(id)?.display ?? id, item: strategy === 'owned-module' ? 'extension module' : 'hook file', path: file, sharedSlot: true, run: () => removeOwnedHookFile(id, opts) });
   }
 
   // The list entry first: OpenCode fails to load a listed plugin that is gone.
