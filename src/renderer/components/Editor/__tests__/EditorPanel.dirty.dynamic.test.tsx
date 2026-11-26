@@ -8,6 +8,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import EditorPanel from '../EditorPanel';
 import { isEditorDirty } from '../dirtyEditors';
+import { useStore } from '../../../stores';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -117,5 +118,24 @@ describe('EditorPanel dirty reporting', () => {
     expect(api).toHaveBeenCalledTimes(1);
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('hello');
     expect(isEditorDirty('s1')).toBe(false);
+  });
+
+  it('keeps the scratch text when the panel remounts while its tab stays open', async () => {
+    const prev = useStore.getState().workspaces;
+    useStore.setState({
+      workspaces: [{ id: 'w1', rootPane: { type: 'leaf', id: 'p1', surfaces: [{ id: 's1' }] } }] as any,
+    });
+    try {
+      await open('hello');
+      const ta = await enterEditMode();
+      await type(ta, 'kept');
+      act(() => root.render(null));
+      expect(isEditorDirty('s1')).toBe(true);
+      await open('hello');
+      expect(isEditorDirty('s1')).toBe(true);
+      expect((await enterEditMode()).value).toBe('kept');
+    } finally {
+      useStore.setState({ workspaces: prev });
+    }
   });
 });

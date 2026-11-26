@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useT } from '../../hooks/useT';
 import { renderBrainMarkdownWhole } from '../shared/BrainMarkdown';
-import { setEditorDirty } from './dirtyEditors';
+import { setEditorDirty, keepEditorScratch, takeEditorScratch } from './dirtyEditors';
+import { useStore } from '../../stores';
+import { findSurfaceById } from '../../utils/paneTraversal';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 
@@ -66,16 +68,25 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
   // View shows the scratch copy, so what was typed is what is read.
   const viewText = content === null ? null : editContent;
   const markdownView = useMemo(
-    () => (isMarkdown && !forceSource && viewText !== null
+    () => (isMarkdown && !forceSource && !editing && viewText !== null
       ? renderBrainMarkdownWhole(viewText, { links: true, githubHtml: true, richCode: true })
       : null),
-    [isMarkdown, forceSource, viewText],
+    [isMarkdown, forceSource, editing, viewText],
   );
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setEditorDirty(surfaceId, dirty);
-    return () => setEditorDirty(surfaceId, false);
   }, [surfaceId, dirty]);
+  // Unmounting while the tab is still open (a split, a move, a workspace
+  // switch) parks the scratch text for the remount; a closed tab drops it.
+  const scratchRef = useRef<string | null>(null);
+  scratchRef.current = dirty ? editContent : null;
+  useEffect(() => () => {
+    const open = useStore.getState().workspaces.some((w) => findSurfaceById(w.rootPane, surfaceId) !== null);
+    const text = open ? scratchRef.current : null;
+    keepEditorScratch(surfaceId, text);
+    setEditorDirty(surfaceId, text !== null);
+  }, [surfaceId]);
   const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
   // Load file content
@@ -88,7 +99,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
         setContent(null);
       } else {
         setContent(result);
-        setEditContent(result);
+        setEditContent(takeEditorScratch(surfaceId) ?? result);
       }
       setLoading(false);
     });
