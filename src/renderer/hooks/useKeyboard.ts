@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
 import { useIpc } from './useIpc';
-import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
+import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
+import { anyEditorDirty, confirmScratchDrop } from '../components/Editor/dirtyEditors';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
@@ -272,8 +273,11 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
       const activeLeaf = findLeaf(ws.rootPane, ws.activePaneId);
-      if (activeLeaf) disposeTree(activeLeaf);
-      state.closePane(ws.activePaneId);
+      // Unsaved editor scratch text is lost with the pane: ask first.
+      confirmScratchDrop(!!activeLeaf && anyEditorDirty([activeLeaf]), () => {
+        if (activeLeaf) disposeTree(activeLeaf);
+        state.closePane(ws.activePaneId);
+      });
     },
     newWorkspace: () => { store.getState().addWorkspace(); },
     // Cycles the sidebar's listed workspaces, the same list the digits number:
@@ -514,8 +518,11 @@ export function useKeyboard() {
         const ws = activeWorkspace();
         if (!ws) return;
         const activeLeaf = findLeaf(ws.rootPane, ws.activePaneId);
-        if (activeLeaf) disposePanePtys(activeLeaf);
-        store.getState().closePane(ws.activePaneId);
+        // Unsaved editor scratch text is lost with the pane: ask first.
+        confirmScratchDrop(!!activeLeaf && anyEditorDirty([activeLeaf]), () => {
+          if (activeLeaf) disposePanePtys(activeLeaf);
+          store.getState().closePane(ws.activePaneId);
+        });
       },
       searchTerminal: () => { store.getState().toggleSearchBar(); },
       commandPalette: () => { store.getState().toggleCommandPalette(); },
@@ -547,15 +554,17 @@ export function useKeyboard() {
         const ws = activeWorkspace();
         // Moa's HQ and the last workspace: refused before any session is touched.
         if (ws && refuseWorkspaceClose(ws.id, state)) return;
-        if (ws) {
-          // 워크스페이스가 소유한 모든 PTY 정리 — 보관된 페인 포함(#977).
-          // Same reasoning as Sidebar's close button and the prefix
-          // killWorkspace action: a stashed session outliving its workspace is
-          // an orphan nothing can reach.
-          for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
-          destroyWorkspaceRemoteSessions(ws); // #1129 — same reasoning, no ptyId
-        }
-        state.removeWorkspace(state.activeWorkspaceId);
+        confirmScratchDrop(!!ws && anyEditorDirty(getWorkspaceLeafPanes(ws)), () => {
+          if (ws) {
+            // 워크스페이스가 소유한 모든 PTY 정리 — 보관된 페인 포함(#977).
+            // Same reasoning as Sidebar's close button and the prefix
+            // killWorkspace action: a stashed session outliving its workspace is
+            // an orphan nothing can reach.
+            for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
+            destroyWorkspaceRemoteSessions(ws); // #1129 — same reasoning, no ptyId
+          }
+          state.removeWorkspace(ws?.id ?? state.activeWorkspaceId);
+        });
       },
       // Jump to the latest unread notification's workspace.
       jumpToUnread: () => {
