@@ -8,7 +8,7 @@ import { sendRequest } from '../client';
 import { ensureOk, printResult } from '../utils';
 import { resolveSenderPtyId } from './channel';
 import { ENV_KEYS } from '../../shared/constants';
-import { A2A_BULK_CANCEL_MAX, A2A_BULK_CANCEL_STATES } from '../../shared/a2aTaskCleanup';
+import { A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS, A2A_BULK_CANCEL_MAX, A2A_BULK_CANCEL_STATES } from '../../shared/a2aTaskCleanup';
 
 export const TASK_HELP = `
 wmux task — your workspace's A2A tasks
@@ -80,7 +80,7 @@ export async function handleTask(sub: string | undefined, args: string[], jsonMo
     console.error('Error: run this from a shell inside a wmux pane (no workspace or pane identity).');
     process.exit(1);
   }
-  const response = await sendRequest('a2a.task.cancel', { ...built, workspaceId, senderPtyId });
+  const response = await sendRequest('a2a.task.cancel', { ...built, workspaceId, senderPtyId }, A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS);
   if (jsonMode) {
     printResult(response);
     return;

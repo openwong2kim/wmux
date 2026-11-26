@@ -14,6 +14,7 @@ import {
 } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
+import { A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS } from '../shared/a2aTaskCleanup';
 import { ROLE_TOOL_SURFACES, resolveRoleName } from '../shared/roleSurfaces';
 import { isBotRole, type BotRole } from '../shared/bot';
 import { botSurfaceTools } from '../shared/botSurface';
@@ -2412,11 +2413,12 @@ server.tool(
     if (state !== undefined) params.state = state;
     if (older_than_days !== undefined) params.olderThanDays = older_than_days;
     if (dry_run !== undefined) params.dryRun = dry_run;
+    const bulk = task_ids !== undefined || state !== undefined || older_than_days !== undefined || dry_run === true;
     // The caller's pane, as for an update: a company task is canceled only
     // by the pane that created it.
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) params.senderPtyId = senderPtyId;
-    return callRpc('a2a.task.cancel', params);
+    return callRpc('a2a.task.cancel', params, bulk ? A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS : undefined);
   },
 );
 

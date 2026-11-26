@@ -115,6 +115,12 @@ describe('a2a.task.cancel in bulk', () => {
     expect(realCancels()).toHaveLength(0);
   });
 
+  it('a dry run of a single taskId changes nothing', async () => {
+    const res = await cancel({ workspaceId: 'ws-a', senderPtyId: 'pty-a', taskId: 't-old', dryRun: true });
+    expect(res).toMatchObject({ ok: true, dryRun: true, wouldCancel: ['t-old'] });
+    expect(realCancels()).toHaveLength(0);
+  });
+
   it('a single taskId cancel is unchanged', async () => {
     const res = await cancel({ workspaceId: 'ws-a', senderPtyId: 'pty-a', taskId: 't-old' });
     expect(res).toMatchObject({ ok: true });

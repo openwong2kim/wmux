@@ -12,6 +12,8 @@ import { TERMINAL_STATES, type TaskState } from './types';
 
 /** Most tasks one bulk call names or changes (the rest are reported as `more`). */
 export const A2A_BULK_CANCEL_MAX = 100;
+/** Client wait for a bulk call: up to A2A_BULK_CANCEL_MAX cancels, one at a time. */
+export const A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS = 120000;
 
 /** States a filter may select: the ones a cancel moves. */
 export const A2A_BULK_CANCEL_STATES = ['submitted', 'working', 'input-required'] as const;
@@ -36,8 +38,12 @@ export interface BulkCancelRequest {
 export function parseBulkCancel(params: Record<string, unknown>): BulkCancelRequest | { error: string } | null {
   const hasIds = params.taskIds !== undefined;
   const hasFilter = params.state !== undefined || params.olderThanDays !== undefined;
-  if (!hasIds && !hasFilter) return null;
   const single = typeof params.taskId === 'string' && params.taskId !== '';
+  // A dry run of one task goes the bulk way too: the single path has no dry run.
+  if (!hasIds && !hasFilter && single && params.dryRun === true) {
+    return { selection: { kind: 'ids', taskIds: [(params.taskId as string).trim()] }, dryRun: true };
+  }
+  if (!hasIds && !hasFilter) return null;
   if ((hasIds && hasFilter) || single) {
     return { error: 'give one of taskId, taskIds, or state with olderThanDays' };
   }
