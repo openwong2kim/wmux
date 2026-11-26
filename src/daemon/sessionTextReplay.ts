@@ -112,6 +112,20 @@ export function tailCut(data: Buffer, maxBytes: number, lineWithin = Number.POSI
   return nl !== -1 ? nl + 1 : data.length;
 }
 
+/**
+ * Where a tail holding at least `lines` line feeds starts: just past the line
+ * feed before them, so the tail starts on a line. 0 when the bytes hold fewer.
+ */
+export function lineCut(data: Buffer, lines: number): number {
+  let at = data.length;
+  for (let n = 0; n <= lines; n++) {
+    if (at === 0) return 0;
+    at = data.lastIndexOf(0x0a, at - 1);
+    if (at < 0) return 0;
+  }
+  return at + 1;
+}
+
 /** A cell no byte of a replay wrote (see withUnknownCells). Private use: no TUI draws it. */
 export const UNKNOWN_CELL = '';
 

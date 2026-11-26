@@ -129,12 +129,12 @@ describe('guarded tail isolation', () => {
     expect(guarded.guardedTailRead).toHaveBeenCalledTimes(1);
   });
 
-  it('in the daemon, only StallWatch and the opted-in readSessionText ask for a tail', () => {
+  it('in the daemon, only StallWatch and readSessionText (unless it asks for the whole ring) ask for a tail', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
     expect(source.match(/queuedScreenTail\(/g)).toHaveLength(1);
     expect(source.match(/queuedTextTail\(/g)).toHaveLength(1);
     expect(source).toMatch(/readScreen: async \(id\) => \{\s*const outcome = await queuedScreenTail\(sessionManager, id, 'stallwatch'/);
-    expect(source).toMatch(/p\.tail === true\s*\?\s*await queuedTextTail\(sessionManager, p\.id, scrollback, 'fleet'\)\s*:\s*await queuedTextSnapshot\(/);
+    expect(source).toMatch(/p\.tail === false\s*\?\s*await queuedTextSnapshot\(sessionManager, p\.id, scrollback\)\s*:\s*await queuedTextTail\(sessionManager, p\.id, scrollback, p\.tail === true \? 'fleet' : 'read'\)/);
     // The approval gate keeps the whole ring.
     expect(source).toMatch(/readScreenTail: async \(sessionId\) => \{\s*const outcome = await queuedScreenText\(sessionManager, sessionId\);/);
   });
