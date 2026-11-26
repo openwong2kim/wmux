@@ -7,7 +7,7 @@ shared hook bridge's payload (flavour `jcode`):
 
 | jcode event | wmux signal |
 | --- | --- |
-| `session_start` | `agent.session_start` (`create` → startup, `resume` → resume) |
+| `session_start` | `agent.session_start` (`create` → startup, `resume` → resume; `attach` sends nothing) |
 | `turn_start` | `agent.user_prompt_submit` |
 | `turn_end` | `agent.stop` |
 | `session_end` | `agent.session_end` |

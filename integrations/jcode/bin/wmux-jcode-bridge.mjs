@@ -41,8 +41,9 @@ async function loadShared() {
 }
 
 // jcode's session_start source → the start source wmux gives meaning to.
-// `attach` (an existing session object attached) proves no fresh start, so it
-// is dropped rather than guessed.
+// The daemon treats every agent.session_start as a fresh session on the pane
+// (it clears the previous one's labels), so a start whose source is not one of
+// these (`attach`: an existing session object attached, or none) sends nothing.
 const JCODE_SOURCES = { create: 'startup', resume: 'resume' };
 
 /** The shared bridge payload for one jcode hook invocation, from its env. */
@@ -53,6 +54,7 @@ export function jcodePayloadFromEnv(env = process.env) {
   const cwd = str(env.JCODE_HOOK_CWD);
   const rawSource = str(env.JCODE_HOOK_SOURCE);
   const source = rawSource && Object.hasOwn(JCODE_SOURCES, rawSource) ? JCODE_SOURCES[rawSource] : undefined;
+  if (event === 'session_start' && !source) return {};
   return {
     ...(event ? { hook_event_name: event } : {}),
     ...(sessionId ? { session_id: sessionId } : {}),

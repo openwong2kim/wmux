@@ -29,16 +29,18 @@ describe('buildJcodeEnvelope', () => {
     ['turn_end', 'agent.stop'],
     ['session_end', 'agent.session_end'],
   ])('maps %s to %s, an envelope the daemon accepts', (event, kind) => {
-    const envelope = buildJcodeEnvelope(env({ JCODE_HOOK_EVENT: event }), { now: 7 });
+    const envelope = buildJcodeEnvelope(env({ JCODE_HOOK_EVENT: event, JCODE_HOOK_SOURCE: 'create' }), { now: 7 });
     expect(envelope).toMatchObject({ kind, agent: 'jcode', agentSessionId: SESSION, ptyId: 'pty-123', cwd: '/work/proj', ts: 7 });
     expect(isAgentSignal(envelope)).toBe(true);
   });
 
-  it('translates the session_start source: create → startup, resume → resume, attach dropped', () => {
-    const src = (s: string) => buildJcodeEnvelope(env({ JCODE_HOOK_EVENT: 'session_start', JCODE_HOOK_SOURCE: s }))?.payload;
-    expect(src('create')).toEqual({ source: 'startup' });
-    expect(src('resume')).toEqual({ source: 'resume' });
-    expect(src('attach')).toEqual({});
+  it('translates the session_start source: create → startup, resume → resume; attach sends nothing', () => {
+    const start = (s?: string) => buildJcodeEnvelope(env({ JCODE_HOOK_EVENT: 'session_start', ...(s ? { JCODE_HOOK_SOURCE: s } : {}) }));
+    expect(start('create')?.payload).toEqual({ source: 'startup' });
+    expect(start('resume')?.payload).toEqual({ source: 'resume' });
+    // A session_start clears the pane's state as a fresh session; an attach is not one.
+    expect(start('attach')).toBeNull();
+    expect(start()).toBeNull();
     // turn_start's source (chat / run) is not a session start.
     expect(jcodePayloadFromEnv(env({ JCODE_HOOK_EVENT: 'turn_start', JCODE_HOOK_SOURCE: 'resume' }))).not.toHaveProperty('source');
   });

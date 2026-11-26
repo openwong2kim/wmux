@@ -319,7 +319,7 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
     // jcode's observer events. It passes JCODE_HOOK_* variables, not JSON on
     // stdin; integrations/jcode/bin/wmux-jcode-bridge.mjs builds the payload
     // and maps `JCODE_HOOK_SOURCE` create to startup and resume to resume
-    // (attach proves no fresh session and is dropped). jcode has no approval
+    // (any other start, such as attach, sends nothing). jcode has no approval
     // event yet, so awaiting_input stays with the screen.
     events: {
       session_start: { kind: 'agent.session_start' },
