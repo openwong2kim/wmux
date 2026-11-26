@@ -23,7 +23,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { writeJsonAtomic } from '../settingsFile';
+import { writeJsonAtomic, writeTextAtomic } from '../settingsFile';
+import { inspectTomlHooks, planTomlHooksInstall, planTomlHooksRemove, type TomlHookPlan } from './tomlHookEntries';
 import {
   expectationKey,
   prepareProbedNative,
@@ -94,6 +95,9 @@ export interface CompatHookPaths {
   /** Each owned-module flavour's shipped module, or null when this build has
    *  none to copy. */
   moduleSources?: Partial<Record<CompatHookFlavourId, string | null>>;
+  /** Each toml-hooks flavour's shipped entry point, or null when this build
+   *  has none to copy. */
+  entrySources?: Partial<Record<CompatHookFlavourId, string | null>>;
 }
 
 /**
@@ -156,6 +160,7 @@ export function resolveCompatHookPaths(
 ): CompatHookPaths {
   const configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>> = {};
   const moduleSources: Partial<Record<CompatHookFlavourId, string | null>> = {};
+  const entrySources: Partial<Record<CompatHookFlavourId, string | null>> = {};
   for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
     const resolved = resolveCompatHookConfigDir(id, home, env);
     if (resolved) configDirs[id] = resolved;
@@ -163,12 +168,16 @@ export function resolveCompatHookPaths(
     if (install?.strategy === 'owned-module') {
       moduleSources[id] = findLifecycleAssetSourceFrom(startDir, install.moduleBasename, install.moduleSource);
     }
+    if (install?.strategy === 'toml-hooks') {
+      entrySources[id] = findLifecycleAssetSourceFrom(startDir, install.entryBasename, install.entrySource);
+    }
   }
   const nativeSource = findNativeHooksSource(startDir);
   return {
     home,
     configDirs,
     moduleSources,
+    entrySources,
     nativeHooks: nativeSource
       ? {
         sourcePath: nativeSource,
@@ -210,6 +219,83 @@ function compatHookModuleSpec(
   const destinationPath = compatHookConfigPath(flavourId, paths);
   if (install?.strategy !== 'owned-module' || !destinationPath) return null;
   return { sourcePath: paths.moduleSources?.[flavourId] ?? null, destinationPath, ownershipMarkers: [install.marker] };
+}
+
+// ----- toml-hooks (jcode) ---------------------------------------------------
+
+type TomlHooksInstall = Extract<NonNullable<(typeof COMPAT_HOOK_FLAVOURS)[CompatHookFlavourId]['install']>, { strategy: 'toml-hooks' }>;
+
+function tomlHooksInstall(flavourId: CompatHookFlavourId): TomlHooksInstall | null {
+  const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
+  return install?.strategy === 'toml-hooks' ? install : null;
+}
+
+/** The entry point's copy beside the shared bridge in ~/.wmux/hooks/. */
+function tomlEntrySpec(flavourId: CompatHookFlavourId, paths: Pick<CompatHookPaths, 'bridge' | 'entrySources'>): LifecycleAssetSpec | null {
+  const install = tomlHooksInstall(flavourId);
+  if (!install) return null;
+  return {
+    sourcePath: paths.entrySources?.[flavourId] ?? null,
+    destinationPath: path.join(path.dirname(paths.bridge.destinationPath), install.entryBasename),
+    ownershipMarkers: [install.marker],
+  };
+}
+
+/**
+ * The command wmux registers: `node "<entry>"`. jcode splits the line
+ * shell-style (quotes, backslash escapes) and runs it without a shell, so the
+ * path is quoted for spaces and written with forward slashes (a Windows
+ * backslash would be read as an escape). Null for a path with a quote in it.
+ */
+export function tomlHookCommand(entryPath: string): string | null {
+  const forward = entryPath.replace(/\\/g, '/');
+  if (/["\r\n]/.test(forward)) return null;
+  return `node "${forward}"`;
+}
+
+function tomlOwned(flavourId: CompatHookFlavourId): (command: string) => boolean {
+  const basename = tomlHooksInstall(flavourId)?.entryBasename ?? '\0';
+  return (command) => command.includes(basename);
+}
+
+function readOptionalText(file: string): { text: string | null } | { error: string } {
+  try {
+    // A BOM is not TOML; the write puts it back (keepBom).
+    return { text: fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '') };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { text: null };
+    return { error: String(error) };
+  }
+}
+
+function inspectTomlHooksConfig(
+  flavourId: CompatHookFlavourId,
+  configPath: string,
+  entryPath: string,
+): CompatHookConfigState {
+  const install = tomlHooksInstall(flavourId) as TomlHooksInstall;
+  const read = readOptionalText(configPath);
+  if ('error' in read) return 'malformed';
+  const wanted = tomlHookCommand(entryPath);
+  const states = inspectTomlHooks(read.text, install.register, wanted ?? '', tomlOwned(flavourId));
+  if (!states) return 'malformed';
+  const values = Object.values(states);
+  if (values.every((v) => v === 'current')) return 'current';
+  if (values.every((v) => v === 'absent')) return 'absent';
+  return 'stale';
+}
+
+/** Apply a plan: write the edit, or report the lines to add by hand. */
+function applyTomlPlan(configPath: string, plan: TomlHookPlan): { written: boolean; manualLines: readonly string[] | null; error: string | null } {
+  if (plan.kind === 'manual') return { written: false, manualLines: plan.lines, error: null };
+  if (plan.kind === 'malformed') return { written: false, manualLines: null, error: null };
+  if (plan.text === null) return { written: false, manualLines: null, error: null };
+  try {
+    writeTextAtomic(configPath, plan.text, { keepBom: true });
+  } catch (error) {
+    return { written: false, manualLines: null, error: String(error) };
+  }
+  return { written: true, manualLines: null, error: null };
 }
 
 /** A module copy's asset state, in the config states the other strategy reports. */
@@ -365,6 +451,11 @@ export function inspectCompatHookConfig(
 ): { state: CompatHookConfigState; configPath: string | null } {
   const configPath = compatHookConfigPath(flavourId, paths);
   if (!configPath) return { state: 'unsupported', configPath: null };
+  const toml = tomlHooksInstall(flavourId);
+  if (toml) {
+    const entry = path.join(path.dirname(bridgePath), toml.entryBasename);
+    return { state: inspectTomlHooksConfig(flavourId, configPath, entry), configPath };
+  }
   const moduleSpec = compatHookModuleSpec(flavourId, paths);
   if (moduleSpec) {
     const asset = inspectLifecycleAsset(moduleSpec);
@@ -414,6 +505,9 @@ function inspectOwnedModuleWithoutSource(spec: LifecycleAssetSpec): CompatHookCo
 /** `node <bridge>` is the only form an omp-style module runs. */
 const MODULE_RUNS_NODE = 'the extension runs `node <bridge>`';
 
+/** A toml-hooks entry runs `node` on its entry point, which loads the bridge. */
+const TOML_RUNS_NODE = 'hooks run `node <entry point>`, which loads the shared bridge';
+
 export interface CompatHookInstallOutcome {
   ok: boolean;
   flavour: CompatHookFlavourId;
@@ -428,6 +522,9 @@ export interface CompatHookInstallOutcome {
   before: CompatHookConfigState;
   action: 'none' | 'installed' | 'refreshed';
   error: string | null;
+  /** toml-hooks: the file could not be edited safely, so nothing was written;
+   *  these lines belong under its `[hooks]` table. */
+  manualLines?: readonly string[];
 }
 
 export interface CompatHookInstallOptions {
@@ -534,6 +631,21 @@ export async function installCompatHooks(
     // missing file for every event. Write nothing.
     return { ...stopped, ok: false, bridge, before: owned, error: bridge.error };
   }
+  const entrySpec = tomlEntrySpec(flavourId, paths);
+  if (entrySpec) {
+    const base = { flavour: flavourId, configPath, native: null, nativeSummary: TOML_RUNS_NODE, bridge, before: owned };
+    const command = tomlHookCommand(entrySpec.destinationPath);
+    if (!command) return { ...base, ok: false, action: 'none', error: `no safe command line for ${entrySpec.destinationPath}` };
+    const copied = installLifecycleAsset(entrySpec);
+    if (copied.state !== 'current') return { ...base, ok: false, action: 'none', error: copied.error ?? `entry point ${copied.state}` };
+    const read = readOptionalText(configPath);
+    if ('error' in read) return { ...base, ok: false, action: 'none', error: read.error };
+    const install = tomlHooksInstall(flavourId) as TomlHooksInstall;
+    const applied = applyTomlPlan(configPath, planTomlHooksInstall(read.text, install.register, command, tomlOwned(flavourId)));
+    if (applied.manualLines) return { ...base, ok: false, action: 'none', error: null, manualLines: applied.manualLines };
+    if (applied.error) return { ...base, ok: false, action: 'none', error: applied.error };
+    return { ...base, ok: true, action: applied.written ? (owned === 'absent' ? 'installed' : 'refreshed') : 'none', error: null };
+  }
   const moduleSpec = compatHookModuleSpec(flavourId, paths);
   if (moduleSpec) {
     const copied = installLifecycleAsset(moduleSpec);
@@ -563,6 +675,9 @@ export interface CompatHookRemoveOutcome {
   before: CompatHookConfigState;
   removed: boolean;
   error: string | null;
+  /** toml-hooks: the lines to take out by hand, when the file could not be
+   *  edited safely (nothing was written). */
+  manualLines?: readonly string[];
 }
 
 /**
@@ -577,6 +692,21 @@ export function removeCompatHooks(flavourId: CompatHookFlavourId, paths: CompatH
   const base = { flavour: flavourId, configPath, before };
   if (before !== 'current' && before !== 'stale') {
     return { ...base, ok: before !== 'unsupported', removed: false, error: null };
+  }
+  const install = tomlHooksInstall(flavourId);
+  if (install) {
+    // Only wmux's commands leave the file; the entry point copy stays, like
+    // the shared bridge (a jcode started before the edit may still run it).
+    const read = readOptionalText(configPath as string);
+    if ('error' in read) return { ...base, ok: false, removed: false, error: read.error };
+    const owned = tomlOwned(flavourId);
+    const plan = planTomlHooksRemove(read.text, install.register, owned);
+    const applied = applyTomlPlan(configPath as string, plan);
+    if (applied.manualLines) {
+      const lines = install.register.map((k) => `${k}: remove the command running ${install.entryBasename}`);
+      return { ...base, ok: false, removed: false, error: null, manualLines: lines };
+    }
+    return { ...base, ok: !applied.error, removed: applied.written, error: applied.error };
   }
   try {
     fs.unlinkSync(configPath as string);
@@ -611,7 +741,9 @@ export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatH
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,
-    nativeSummary: compatHookModuleSpec(flavourId, paths)
+    nativeSummary: tomlHooksInstall(flavourId)
+      ? TOML_RUNS_NODE
+      : compatHookModuleSpec(flavourId, paths)
       ? MODULE_RUNS_NODE
       : describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
     configPath,

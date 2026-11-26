@@ -16,16 +16,22 @@ Only the event name, session id, cwd and start source are read. The reply
 text, tool input and `JCODE_HOOK_PAYLOAD` are never read or forwarded. jcode
 has no approval event yet, so "waiting on you" still comes from the screen.
 
-Until `wmux setup-hooks --agent jcode` lands, add the entry point by hand in
-`~/.jcode/config.toml`, next to any hooks you already have (each key takes a
-string or an array):
+Install it with:
+
+```sh
+wmux setup-hooks --agent jcode           # add wmux's command to each event
+wmux setup-hooks --agent jcode --status  # current / stale / absent
+wmux setup-hooks --agent jcode --remove  # take only wmux's commands out
+```
+
+It edits `[hooks]` in `~/.jcode/config.toml` (`$JCODE_HOME/config.toml` when
+set) one line at a time, next to any hooks you already have, and keeps your
+comments. Where it cannot do that (a multi-line array, an inline `hooks`
+table), it writes nothing and prints the lines to set, for example:
 
 ```toml
 [hooks]
-session_start = ["node /abs/path/to/wmux-jcode-bridge.mjs"]
-turn_start    = ["node /abs/path/to/wmux-jcode-bridge.mjs"]
-turn_end      = ["node /abs/path/to/wmux-jcode-bridge.mjs"]
-session_end   = ["node /abs/path/to/wmux-jcode-bridge.mjs"]
+turn_end = ["~/bin/your-hook", "node \"/home/you/.wmux/hooks/wmux-jcode-bridge.mjs\""]
 ```
 
 jcode parses the line shell-style, so write Windows paths with forward slashes.
