@@ -150,7 +150,8 @@ export async function queuedComposerRows(sessions: TextReadSessions, sessionId: 
  * own kind, so its answers are never reused by, or joined to, a whole-ring read.
  */
 export function queuedTextTail(sessions: TextReadSessions, sessionId: string, scrollback: number, site: TailSite): Promise<TailOutcome | null> {
-  return queuedSessionRead(sessions, sessionId, `text-tail:${scrollback}`, (managed) => {
+  // The site is in the kind: a read never joins or reuses another site's job, so each site's counters and miss runs see all its reads.
+  return queuedSessionRead(sessions, sessionId, `text-tail:${site}:${scrollback}`, (managed) => {
     const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback };
     return guardedTailRead(managed, { site, variant: `scrollback:${scrollback}`, historyRows: scrollback, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
   }, scrollback <= REUSE_MAX_SCROLLBACK);

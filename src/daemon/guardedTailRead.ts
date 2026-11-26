@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import type { TailReadCounters } from '../shared/memoryDiagnostics';
 import type { TextSnapshotOutcome, TextSnapshotRow } from './HeadlessSnapshot';
 import type { RingBuffer } from './RingBuffer';
-import { UNKNOWN_CELL, lineCut, readRingWithModes, tailCut, withUnknownCells } from './sessionTextReplay';
+import { UNKNOWN_CELL, lineCut, tailCut, withUnknownCells } from './sessionTextReplay';
 import { screenCheckpointBytes, screenReplay, takeScreenCheckpoint, type CheckpointRing } from './screenCheckpoint';
 import { enqueueSnapshotJob } from './HeadlessSnapshot';
 import { TailHazardScan, type TailHazard } from './tailHazards';
@@ -220,8 +220,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const data = session.ringBuffer.readAll();
   const writtenAt = session.ringBuffer.totalBytesWritten;
   const ringStart = writtenAt - data.length;
-  const full = screen ? null : readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
-  const wholeReplay = (): Buffer => full ?? readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
+  // The whole ring's replay is built only when a read needs it; its preamble is taken now, with the bytes.
+  const wholeLead = screen ? '' : (modes?.preamble(ringStart) ?? '');
+  const wholeReplay = (): Buffer => (wholeLead ? Buffer.concat([Buffer.from(wholeLead, 'utf8'), data]) : data);
   time(c, 'ringCopyMs', performance.now() - started);
   /** The fallback's answer: the screen read's (its unknown cells blanked), or the whole ring's. */
   const parseFallback = async (): Promise<TextSnapshotOutcome> => {
@@ -255,7 +256,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   // edge would leave almost nothing to replay, so start at an escape instead.
   const byteCut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
   // Fewer line feeds than that in the whole ring (a TUI that draws by position): the byte cut, as before.
-  const rowCut = options.historyRows === undefined ? byteCut : lineCut(data, options.historyRows + 2 * rows) || byteCut;
+  // The alternate screen keeps no history, so its reads keep the byte cut too.
+  const deep = options.historyRows !== undefined && modes?.altScreen !== true;
+  const rowCut = deep ? lineCut(data, (options.historyRows ?? 0) + 2 * rows) || byteCut : byteCut;
   const cut = Math.min(byteCut, rowCut);
   if (cut === 0) {
     // The whole ring fits: the tail is the whole replay. A screen read's is its checkpoint's, which may

@@ -483,6 +483,15 @@ describe('guarded tail: a read that keeps deep history (#3510)', () => {
     expect(tailReadCounters().read.fallbacks).toEqual({ 'too-deep': 1 });
   });
 
+  it('keeps the 256 KiB cut on the alternate screen, which holds no history: no deep tail back past the switch', async () => {
+    const ticks = Array.from({ length: 60_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '0')}`).join('');
+    const s = session([...lines(1024 * 1024), '\x1b[?1049h\x1b[2J', ...Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hrow ${r}`), ticks]);
+    const { calls, parse } = deepCounting();
+    await guardedTailRead(s, { site: 'read', variant: `scrollback:${DEPTH}`, historyRows: DEPTH, parse });
+    expect(calls[0]).toBeLessThan(TAIL_BYTES + 64 * 1024);
+    expect(tailReadCounters().read.fallbacks).not.toHaveProperty('screen-switch');
+  });
+
   it('a capped deep read tries the tail again only once its own tail length of output has arrived', async () => {
     const progress = (from: number, n: number) => Array.from({ length: n }, (_, i) => `\x1b[2Kprogress ${from + i} ${'p'.repeat(60)}\r\n\x1b[1A`).join('');
     const s = session([...lines(1024 * 1024), '\x1b[10;1H', progress(0, 7000)]);

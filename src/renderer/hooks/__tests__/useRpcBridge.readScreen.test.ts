@@ -263,6 +263,9 @@ it("tags a read of the daemon ring as parked only for main's folder-trust check"
     readText.mockResolvedValue({ success: true, rows: [{ text: '% ', wrapped: false }], bufferType: 'normal' });
     expect(await handleRpcMethod('input.readScreen', { ptyId })).toEqual({ ptyId, text: '% ' });
     expect(await handleRpcMethod('input.readScreen', { ptyId, markParked: true })).toEqual({ ptyId, text: '% ', parked: true });
+    // The check decides whether to type into the pane: it asks for the whole ring, never the daemon's tail.
+    expect(readText.mock.calls[0][1]).not.toHaveProperty('tail');
+    expect(readText.mock.calls[1][1]).toMatchObject({ tail: false });
     // A ring read that failed is still a parked read, not a live screen.
     readText.mockResolvedValue({ success: false });
     expect(await handleRpcMethod('input.readScreen', { ptyId, markParked: true })).toEqual({ ptyId, text: '', parked: true });
