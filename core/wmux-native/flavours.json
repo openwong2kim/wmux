@@ -69,5 +69,19 @@
     "sourceField": null,
     "logFile": "omp-hooks.log",
     "requestPrefix": "omp-hook"
+  },
+  "jcode": {
+    "agent": "jcode",
+    "events": {
+      "session_start": { "kind": "agent.session_start" },
+      "turn_start": { "kind": "agent.user_prompt_submit" },
+      "turn_end": { "kind": "agent.stop" },
+      "session_end": { "kind": "agent.session_end" }
+    },
+    "sessionIdFields": ["session_id"],
+    "cwdFields": ["cwd"],
+    "sourceField": "source",
+    "logFile": "jcode-hooks.log",
+    "requestPrefix": "jcode-hook"
   }
 }

@@ -205,6 +205,7 @@ export const NON_MANIFEST_INTEGRATIONS = {
   kiro: 'hooks live inside a wmux-owned agent config, not a hooks.json; covered explicitly',
   opencode: 'in-process plugin, not a spawned hook; measured separately',
   shared: 'not an agent — shared type declarations',
+  jcode: 'hooks registered in ~/.jcode/config.toml (TOML, not a hooks.json), passed as JCODE_HOOK_* env; covered explicitly',
   omp: 'in-process extension module, not a spawned hook; each event runs the shared bridge (flavour omp), covered explicitly',
   agy: 'statusLine quota sensor (quota-sink.js) registered in settings.json, not a hooks.json; reads stdin, writes only to ~/.wmux/quota/agy.json, no tool/model hooks',
 };
@@ -460,6 +461,41 @@ export function buildCases(payloadOpts) {
     });
   }
 
+  // jcode passes its hook data as JCODE_HOOK_* environment variables, with
+  // nothing on stdin, so its cases carry `caseEnv` and `stdin: 'none'`. The
+  // content variables (JCODE_HOOK_PAYLOAD, JCODE_HOOK_LAST_ASSISTANT_TEXT) are
+  // set as jcode sets them, and post_tool is the per-tool event wmux ignores.
+  const jcodeScript = join(REPO_ROOT, 'integrations', 'jcode', 'bin', 'wmux-jcode-bridge.mjs');
+  const jcodeCwd = payloadOpts?.cwd ?? '/tmp/harness';
+  for (const [event, extra] of [
+    ['session_start', { JCODE_HOOK_SOURCE: 'create' }],
+    ['turn_start', { JCODE_HOOK_SOURCE: 'chat' }],
+    ['turn_end', { JCODE_HOOK_STATUS: 'ok', JCODE_HOOK_LAST_ASSISTANT_TEXT: 'the model said this' }],
+    ['session_end', { JCODE_HOOK_SOURCE: 'close' }],
+    ['post_tool', { JCODE_HOOK_TOOL_NAME: 'bash', JCODE_HOOK_TOOL_INPUT: '{"command":"ls"}' }],
+  ]) {
+    const caseEnv = {
+      JCODE_HOOK_EVENT: event,
+      JCODE_HOOK_SESSION_ID: 'session_harness_1793795316908_9e051dbeac3a2b8b',
+      JCODE_HOOK_CWD: jcodeCwd,
+      JCODE_HOOK_PAYLOAD: JSON.stringify({ event, prompt: 'the user typed this' }),
+      JCODE_HOOKS_DISABLED: '1',
+      ...extra,
+    };
+    cases.push({
+      agent: 'jcode',
+      contract: 'compatHook',
+      id: `jcode:${event}`,
+      event,
+      matcher: event,
+      script: jcodeScript,
+      args: [],
+      stdin: 'none',
+      caseEnv,
+      payload: caseEnv,
+    });
+  }
+
   // The shared Claude-compatible bridge (#1904). Kiro already runs through it
   // via its own entry point above; the other flavours are invoked the way their
   // installer registers them: `node <bridge> <flavour> <Event>`. Derived from
@@ -468,7 +504,8 @@ export function buildCases(payloadOpts) {
   const compatScript = join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs');
   const compatCwd = payloadOpts?.cwd ?? '/tmp/harness';
   for (const [flavour, row] of Object.entries(COMPAT_FLAVOURS)) {
-    if (flavour === 'kiro') continue;
+    // kiro and jcode run through their own entry points (cases above).
+    if (flavour === 'kiro' || flavour === 'jcode') continue;
     for (const event of [...Object.keys(row.events), 'PreToolUse']) {
       const rule = row.events[event];
       cases.push({
@@ -879,7 +916,7 @@ export const DEFAULT_BUDGET_MS = 6000;
  * measurement ('timedOut: true'), not an exception, so one hanging hook still
  * produces a comparable row instead of collapsing the run.
  */
-export function runHookCase({ script, args = [], env = {}, payload, stdin = 'json', argvPayload, budgetMs = DEFAULT_BUDGET_MS }) {
+export function runHookCase({ script, args = [], env = {}, caseEnv = {}, payload, stdin = 'json', argvPayload, budgetMs = DEFAULT_BUDGET_MS }) {
   return new Promise((resolve) => {
     // Seal the environment before applying the scenario. The harness itself is
     // often run from inside a wmux pane under a wmux-integrated agent, so the
@@ -891,7 +928,9 @@ export function runHookCase({ script, args = [], env = {}, payload, stdin = 'jso
     for (const key of Object.keys(childEnv)) {
       if (key.startsWith('WMUX_') || key.startsWith('CLAUDE_')) delete childEnv[key];
     }
-    for (const [k, v] of Object.entries(env)) {
+    // The host's own variables for this case (jcode's JCODE_HOOK_*), then the
+    // scenario's, which describe the wmux side and win on a clash.
+    for (const [k, v] of Object.entries({ ...caseEnv, ...env })) {
       if (v === undefined) delete childEnv[k];
       else childEnv[k] = v;
     }
