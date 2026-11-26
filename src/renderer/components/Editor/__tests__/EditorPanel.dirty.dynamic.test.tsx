@@ -180,4 +180,16 @@ describe('EditorPanel dirty reporting', () => {
       useStore.setState({ workspaces: prev });
     }
   });
+
+  it('reports dirty after a Reload that succeeds where the first read failed', async () => {
+    const readFile = vi.fn().mockRejectedValueOnce(new Error('EACCES')).mockResolvedValue('hello');
+    (window as any).electronAPI = { fs: { readFile } };
+    await act(async () => {
+      root.render(createElement(EditorPanel, { filePath: '/p/notes.txt', isActive: true, surfaceId: 's1' }));
+    });
+    const reload = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Reload')!;
+    await act(async () => reload.click());
+    await type(await enterEditMode(), 'after reload');
+    expect(isEditorDirty('s1')).toBe(true);
+  });
 });

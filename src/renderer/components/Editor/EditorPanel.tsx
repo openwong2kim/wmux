@@ -176,12 +176,16 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
         setError(t('editor.unableToRead'));
         setContent(null);
       } else {
+        // The first successful read is the restore, whichever load it is: a
+        // Reload after a failed first read takes the parked copy back too.
+        const kept = restoredRef.current ? undefined : takeEditorScratch(surfaceId);
+        restoredRef.current = true;
         setContent(result);
-        setEditContent(result);
+        setEditContent(kept ?? result);
       }
       setLoading(false);
     });
-  }, [filePath]);
+  }, [filePath, surfaceId]);
 
   // Reloading replaces the scratch copy with the file: ask first when that
   // would drop edits.
