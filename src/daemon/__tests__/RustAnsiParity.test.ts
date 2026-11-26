@@ -522,6 +522,13 @@ const resizes: Case[] = [
   resized('fewer-rows-cursor-high', 'a\r\nb\r\nc\r\nd\x1b[2;1H', [80, 12], [80, 3]),
   resized('narrow-history-cursor-top', `${many}\x1b[H`, [80, 12], [40, 12]),
   resized('narrow-no-wrap', 'short\r\nlines\r\nonly', [80, 12], [40, 12]),
+  // A C0 control inside a sequence the feed ends in runs where it stands, at
+  // the old size: the LF scrolls `a` out of two rows with no history (#3466).
+  resizedThrough('osc-opener-control-then-taller', [20, 2], [['a\r\nb\x1b\n]2;t', [20, 3]]], '\x07c', 0),
+  resizedThrough('csi-control-then-taller', [20, 2], [['a\r\nb\x1b[3\n', [20, 3]]], '1mc', 0),
+  // Split there with no resize, the output is the same as unsplit.
+  resizedThrough('osc-opener-control-split', [20, 2], [['a\r\nb\x1b\n]2;t', [20, 2]]], '\x07c', 0),
+  resizedThrough('csi-control-split', [20, 2], [['a\r\nb\x1b[3\n', [20, 2]]], '1mc', 0),
   // Colored CJK paragraphs reflowed to 9..20 columns (bench/rust-snapshot-parity.ts).
   ...Array.from({ length: 24 }, (_, i) => i + 1).filter(seed => seed !== 14).map(seed => resized(`reflow-seed-${seed}`,
     Array.from({ length: seed }, (_, i) => `\x1b[3${i % 8}m${'abc\ud55c'.repeat(1 + i % 5)}\x1b[0m`).join('\r\n'),
