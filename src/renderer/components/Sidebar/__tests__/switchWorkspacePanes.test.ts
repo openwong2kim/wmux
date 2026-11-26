@@ -52,13 +52,15 @@ describe('switching a workspace\'s open panes to an account', () => {
   });
 
   it('only refusals before the stop are skips; a broken copy, a timeout or an unknown code is a failure', () => {
-    for (const code of ['turn_open', 'busy', 'folder_trust', 'not_claude', 'unsupported', 'invalid_account', 'unavailable', 'still_running', 'no_session', 'not_signed_in']) {
+    for (const code of ['turn_open', 'busy', 'folder_trust', 'not_claude', 'unsupported', 'invalid_account', 'unavailable', 'still_running', 'no_session', 'unknown_session', 'not_signed_in']) {
       expect(isSkip({ kind: 'refused', code })).toBe(true);
     }
-    for (const code of ['diverged', 'copy_failed', 'unknown_session', 'pending', 'lost', 'something_new', 'same_account']) {
+    for (const code of ['diverged', 'copy_failed', 'session_changed', 'pending', 'lost', 'something_new', 'same_account']) {
       expect(isSkip({ kind: 'refused', code })).toBe(false);
     }
     expect(tallySwitch([{ ptyId: 'x', title: 'x', outcome: { kind: 'refused', code: 'pending' } }]).failed).toBe(1);
+    // A pane whose conversation is not known yet was not touched: skipped, with its reason.
+    expect(tallySwitch([{ ptyId: 'x', title: 'x', outcome: { kind: 'refused', code: 'unknown_session' } }])).toMatchObject({ skipped: 1, failed: 0 });
   });
 
   it('leaves out, silently, a pane gone or no longer the agent by its step', async () => {
