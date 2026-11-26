@@ -156,6 +156,27 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(ids).toEqual(['cap-skipped', 'live-one'].sort());
   });
 
+  // #3247: every slot on disk but none readable is not a first save.
+  it('does not save over a sessions.json it cannot read when there is no backup', async () => {
+    const sessionsFile = path.join(tmpDir, 'sessions.json');
+    fs.writeFileSync(sessionsFile, '{{ definitely not json', 'utf8');
+
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    await runSnapshotOnce();
+
+    expect(fs.readFileSync(sessionsFile, 'utf-8')).toBe('{{ definitely not json');
+  });
+
+  it('still saves on a first boot with no sessions.json at all', async () => {
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    await runSnapshotOnce();
+
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf-8')) as {
+      sessions: { id: string }[];
+    };
+    expect(persisted.sessions.map((s) => s.id)).toEqual(['live-one']);
+  });
+
   // Authoritative-managed rule: if a session id exists in both the existing
   // file and sessionManager, sessionManager wins (carries the latest
   // lastActivity / cwd / geometry that may not yet have been saved by any

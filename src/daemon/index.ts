@@ -3293,7 +3293,14 @@ function registerRpcHandlers(
     // remainder alongside it or this write erases those panes — the same merge
     // the reboot-survival save in recoverSessions does.
     const liveIds = new Set(next.sessions.map((s) => s.id));
-    next.sessions.push(...stateWriter.load().sessions.filter((s) => !liveIds.has(s.id)));
+    const onDisk = stateWriter.loadWithStatus();
+    // #3247: unreadable reads as zero sessions; saving the merge would replace
+    // the file with the live panes only.
+    if (onDisk.status === 'unreadable') {
+      log('warn', `[recovery] ${stateWriter.getFilePath()} could not be read — not saving the retention restamp for ${id}`);
+      return;
+    }
+    next.sessions.push(...onDisk.state.sessions.filter((s) => !liveIds.has(s.id)));
     stateWriter.saveImmediate(next);
   };
 
