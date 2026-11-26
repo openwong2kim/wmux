@@ -155,6 +155,26 @@ export const FLAVOURS = {
     logFile: 'qwen-hooks.log',
     requestPrefix: 'qwen-hook',
   },
+  // Oh My Pi (omp). omp runs no hook commands; wmux's extension module
+  // (integrations/omp/extensions/wmux.js) spawns this bridge per lifecycle
+  // event with omp's own event name in argv and only {session_id, cwd} on
+  // stdin. Measured live on omp 19.2.1 (macOS, 2026-11-26).
+  omp: {
+    agent: 'omp',
+    events: {
+      session_start: { kind: 'agent.session_start' },
+      before_agent_start: { kind: 'agent.user_prompt_submit' },
+      agent_end: { kind: 'agent.stop' },
+      tool_approval_requested: { kind: 'agent.awaiting_input' },
+      tool_approval_resolved: { kind: 'agent.input_answered' },
+      session_shutdown: { kind: 'agent.session_end' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: null,
+    logFile: 'omp-hooks.log',
+    requestPrefix: 'omp-hook',
+  },
 };
 
 // A SessionStart `source` (read from the flavour's `sourceField`) is forwarded

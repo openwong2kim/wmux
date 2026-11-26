@@ -32,7 +32,7 @@ import type { AgentSignalKind } from './signal-types';
 
 /** Every flavour the shared bridge serves. A subset of the registry's
  *  `AgentHooksFlavour`, which also names the bespoke bridges. */
-export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini' | 'qwen'>;
+export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini' | 'qwen' | 'omp'>;
 
 /** One dialect event → one wmux signal kind, optionally only when a payload
  *  field equals a value. */
@@ -48,6 +48,12 @@ export interface CompatHookEventRule {
  * of its own there. Install is create-or-refresh, uninstall is delete, and a
  * user's settings are never parsed or rewritten. Ownership is proved by the
  * content (every entry runs the shared bridge), never by the file name alone.
+ *
+ * `owned-module`: the CLI runs no hook commands at all; it imports every
+ * module in a directory. wmux copies its own module (shipped beside the
+ * bridge) there, and that module runs the shared bridge per lifecycle event.
+ * Install is create-or-refresh, uninstall is delete. Ownership is the
+ * module's first-line marker; current means byte-equal to the shipped copy.
  *
  * `settings-hooks-key`: the hooks live under a `hooks` key in a settings file
  * the user also edits. Install would have to merge leaf by leaf, owned by the
@@ -71,6 +77,22 @@ export type CompatHookInstall =
     readonly commandForm: 'exec';
     /** Per-hook timeout the CLI enforces, in seconds. The bridge caps itself at 2s. */
     readonly timeoutSec: number;
+  }
+  | {
+    readonly strategy: 'owned-module';
+    /** As for `owned-file`. */
+    readonly configDir: readonly string[];
+    readonly configDirEnv: string | null;
+    /** wmux's module, as path segments under the config directory. */
+    readonly file: readonly string[];
+    /** Events the module subscribes to. Must be events the bridge maps. */
+    readonly register: readonly string[];
+    /** Basename of the shipped module (dist/cli-bundle, or resources). */
+    readonly moduleBasename: string;
+    /** Path of the module in a source checkout, from the repo root. */
+    readonly moduleSource: readonly string[];
+    /** First-line marker of the module: the ownership proof. */
+    readonly marker: string;
   }
   | {
     readonly strategy: 'settings-hooks-key';
@@ -243,6 +265,50 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       commandForm: 'shell',
       timeoutMs: 5000,
       wired: false,
+    },
+  },
+  omp: {
+    id: 'omp',
+    agent: 'omp',
+    docs: [
+      'https://omp.sh/docs/hooks',
+      // The extension API the module is written against: ExtensionAPI.on(),
+      // ExtensionContext (cwd, sessionManager, agent) and the event types.
+      'https://github.com/can1357/oh-my-pi (@oh-my-pi/pi-coding-agent 19.2.1: src/extensibility/extensions/types.ts, src/extensibility/shared-events.ts)',
+    ],
+    // omp 19.2.1 on macOS, 2026-11-26 (#3276), `omp -p` under a throwaway
+    // HOME: the module loaded and session_start, before_agent_start, agent_end
+    // and session_shutdown reached hooks.signal with the pane's WMUX_PTY_ID.
+    // The approval events were not exercised.
+    verified: 'live',
+    // omp's own event names. The module passes the name in argv and writes
+    // only {session_id, cwd} on stdin; nothing else of omp's events leaves it.
+    events: {
+      session_start: { kind: 'agent.session_start' },
+      before_agent_start: { kind: 'agent.user_prompt_submit' },
+      agent_end: { kind: 'agent.stop' },
+      tool_approval_requested: { kind: 'agent.awaiting_input' },
+      // Approved or denied at the terminal: the waiting card goes.
+      tool_approval_resolved: { kind: 'agent.input_answered' },
+      session_shutdown: { kind: 'agent.session_end' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: null,
+    configLocations: [
+      '~/.omp/agent/extensions/*.{ts,js} (user; $PI_CODING_AGENT_DIR/extensions when PI_CODING_AGENT_DIR is set)',
+      '.omp/extensions/ (project)',
+    ],
+    install: {
+      strategy: 'owned-module',
+      // pi-utils dirs.ts: PI_CODING_AGENT_DIR overrides the agent directory.
+      configDir: ['.omp', 'agent'],
+      configDirEnv: 'PI_CODING_AGENT_DIR',
+      file: ['extensions', 'wmux.js'],
+      register: ['session_start', 'before_agent_start', 'agent_end', 'tool_approval_requested', 'tool_approval_resolved', 'session_shutdown'],
+      moduleBasename: 'wmux-omp-extension.js',
+      moduleSource: ['integrations', 'omp', 'extensions', 'wmux.js'],
+      marker: 'wmux-managed: omp-extension',
     },
   },
 };
