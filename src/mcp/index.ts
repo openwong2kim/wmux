@@ -373,7 +373,11 @@ const A2A_TASK_UPDATE_SHAPE = {
 };
 
 const A2A_TASK_CANCEL_SHAPE = {
-  task_id: z.string().describe('Task ID to cancel'),
+  task_id: z.string().optional().describe('Task ID to cancel'),
+  task_ids: z.array(z.string()).optional().describe('Or up to 100 IDs'),
+  state: z.enum(['submitted', 'working', 'input-required']).optional().describe('Or all yours in this state'),
+  older_than_days: z.number().min(0).optional().describe('With state: idle this many days'),
+  dry_run: z.boolean().optional().describe('List, change nothing'),
   reason: z.string().optional().describe('Cancellation reason'),
 };
 
@@ -2398,11 +2402,16 @@ server.tool(
 // 6. a2a_task_cancel — Cancel a task you sent
 server.tool(
   'a2a_task_cancel',
-  'Cancel a task you previously sent. Only the original sender can cancel.',
+  'Cancel tasks your workspace sent or received.',
   A2A_TASK_CANCEL_SHAPE,
-  async ({ task_id, reason }) => {
+  async ({ task_id, task_ids, state, older_than_days, dry_run, reason }) => {
     const wsId = await requireWorkspaceId();
-    const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, reason };
+    const params: Record<string, unknown> = { workspaceId: wsId, reason };
+    if (task_id !== undefined) params.taskId = task_id;
+    if (task_ids !== undefined) params.taskIds = task_ids;
+    if (state !== undefined) params.state = state;
+    if (older_than_days !== undefined) params.olderThanDays = older_than_days;
+    if (dry_run !== undefined) params.dryRun = dry_run;
     // The caller's pane, as for an update: a company task is canceled only
     // by the pane that created it.
     const senderPtyId = getTaskSenderPtyId();

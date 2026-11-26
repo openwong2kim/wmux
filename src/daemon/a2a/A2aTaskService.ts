@@ -48,6 +48,7 @@ import {
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { companyCancelRefusal, companyDoneRefusal, isCompanyTask, type CompanySeat } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
+import { idleFor } from '../../shared/a2aTaskCleanup';
 import {
   COMPANY_BLOCKED_BY_REFUSAL,
   COMPANY_BLOCKERS_MAX,
@@ -236,6 +237,8 @@ export interface CancelTaskInput {
   /** The human's lane or an in-process first-party caller (set by main). */
   trustedLane?: boolean;
   idempotencyKey?: string;
+  /** Run every check, change nothing: a bulk cancel's dry run (#3068). */
+  dryRun?: boolean;
 }
 
 export type OpErr = { ok: false; error: string };
@@ -244,7 +247,8 @@ export type OpErr = { ok: false; error: string };
  * **재검증 없이 verbatim 적용**한다(§6.M C6, a2aSlice.applyDaemonTaskUpdate).
  */
 export type TransitionOk = { ok: true; verifiedItemCount?: number; task: Task };
-export type CancelOk = { ok: true; task: Task };
+/** `dryRun`: the cancel was allowed and not made (CancelTaskInput.dryRun). */
+export type CancelOk = { ok: true; task: Task; dryRun?: true };
 /** `existed`: the id was already present and nothing was appended (idempotent create). */
 export type CreateOk = { ok: true; taskId: string; task: Task; existed?: true };
 /** Same id, different payload (only with `conflictOnBodyMismatch` / remote ops). */
@@ -813,6 +817,8 @@ export class A2aTaskService {
       if (!validateTransition(task.status.state, 'canceled')) {
         return { ok: false, error: `a2a.task.cancel: cannot cancel task in state ${task.status.state}` };
       }
+      // A dry run stops here: the same checks a real cancel makes, no log entry.
+      if (input.dryRun === true) return { ok: true, task, dryRun: true };
 
       const payload: A2aTaskCancelPayload = {
         kind: 'task.cancel',
@@ -833,8 +839,30 @@ export class A2aTaskService {
       this.idempotencyRecord(input.taskId, input.idempotencyKey, 'cancel', result);
       return result;
     });
-    if (res.ok) await this.settleDependentsOf(input.taskId);
+    if (res.ok && res.dryRun !== true) await this.settleDependentsOf(input.taskId);
     return res;
+  }
+
+  /**
+   * Retention (#3068): close every task still `submitted` with no change for
+   * `olderThanMs`, each canceled as the workspace that sent it, with no pane
+   * and no trusted lane, so a company task only its creating pane may cancel
+   * is refused and left as it is.
+   */
+  async sweepStaleSubmitted(olderThanMs: number, nowMs: number = this.now()): Promise<{ closed: string[]; refused: number; seen: number }> {
+    // A task another PC sent is that PC's to close, not this one's.
+    const stale = [...this.tasks.values()].filter((t) =>
+      t.status.state === 'submitted'
+      && !isRemoteWorkspaceId(t.metadata.from.workspaceId)
+      && idleFor(t.metadata.updatedAt, olderThanMs, nowMs));
+    const closed: string[] = [];
+    let refused = 0;
+    for (const task of stale) {
+      const res = await this.cancelTask({ taskId: task.id, callerWorkspaceId: task.metadata.from.workspaceId });
+      if (res.ok && res.task.status.state === 'canceled') closed.push(task.id);
+      else refused += 1;
+    }
+    return { closed, refused, seen: stale.length };
   }
 
   /**

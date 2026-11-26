@@ -17,6 +17,7 @@ import path from 'node:path';
 import { app, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { loadA2aTaskRetentionDays, setA2aTaskRetentionDays } from '../../a2a/a2aTaskRetention';
 import { ORCH_ROLES, normalizeRoleBindings, sanitizeOrchRole, type OrchestratorRoleBindings } from '../../../shared/orchestratorRole';
 
 /** A role name only if it is one wmux actually defines; '' otherwise. */
@@ -126,6 +127,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_LIVE_CAP_SET,
     wrapHandler(IPC.FANOUT_LIVE_CAP_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
       setFanoutLiveTaskCap(value),
+    ),
+  );
+  // A2A task retention (a2aTaskRetention.ts): written only here, like the caps.
+  ipcMain.removeHandler(IPC.A2A_TASK_RETENTION_GET);
+  ipcMain.handle(
+    IPC.A2A_TASK_RETENTION_GET,
+    wrapHandler(IPC.A2A_TASK_RETENTION_GET, async () => loadA2aTaskRetentionDays()),
+  );
+  ipcMain.removeHandler(IPC.A2A_TASK_RETENTION_SET);
+  ipcMain.handle(
+    IPC.A2A_TASK_RETENTION_SET,
+    wrapHandler(IPC.A2A_TASK_RETENTION_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setA2aTaskRetentionDays(value),
     ),
   );
   ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_GET);
