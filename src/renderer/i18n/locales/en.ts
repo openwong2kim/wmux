@@ -1967,7 +1967,7 @@ export const en = {
   'accounts.switchPanesConfirm': "Continue {count} open Claude panes on {name}? Panes in a turn are skipped.",
   'accounts.switchPanesRun': "Switch",
   'accounts.switchPanesSummary': "Open panes on {name}: {switched} switched, {already} already on it, {opened} continued in a new pane beside, {skipped} skipped, {failed} failed.",
-  'accounts.switchPanesBindingKept': "The workspace now uses {name}; the failed panes stay on their account.",
+  'accounts.switchPanesBindingKept': "The workspace now uses {name}; new panes start on it.",
   'accounts.switchPanesBindFailed': "Could not bind the account, so no pane was switched.",
   'accounts.groupsDesc': "Automatic account switching stays inside an account's group, so work and personal accounts never mix. Accounts with no group form one pool.",
   'accounts.noGroup': 'No group',

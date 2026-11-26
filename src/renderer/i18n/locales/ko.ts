@@ -5175,7 +5175,7 @@ export const ko = {
   'accounts.switchPanesConfirm': "열린 Claude 판 {count}개를 {name}에서 이어갈까요? 응답 중인 판은 건너뜁니다.",
   'accounts.switchPanesRun': "전환",
   'accounts.switchPanesSummary': "{name}(으)로 열린 판 전환: {switched}개 전환, {already}개는 이미 그 계정, {opened}개는 옆 새 판에서 이어감, {skipped}개 건너뜀, {failed}개 실패.",
-  'accounts.switchPanesBindingKept': "워크스페이스는 이제 {name}을(를) 씁니다. 실패한 판은 원래 계정에 남습니다.",
+  'accounts.switchPanesBindingKept': "워크스페이스는 이제 {name}을(를) 씁니다. 새 판은 이 계정으로 열립니다.",
   'accounts.switchPanesBindFailed': "계정을 지정하지 못해 판을 전환하지 않았습니다.",
   'accounts.groupsDesc': '자동 계정 전환은 계정의 그룹 안에서만 일어나므로 회사 계정과 개인 계정이 섞이지 않습니다. 그룹이 없는 계정은 하나의 묶음으로 취급됩니다.',
   'accounts.noGroup': '그룹 없음',

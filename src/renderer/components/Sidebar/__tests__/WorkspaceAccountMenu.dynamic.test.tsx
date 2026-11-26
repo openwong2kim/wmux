@@ -117,7 +117,7 @@ describe('WorkspaceAccountMenu', () => {
     expect(continuePane).toHaveBeenCalledTimes(2);
     const summary = useStore.getState().toasts.at(-1);
     expect(summary?.level).toBe('warn');
-    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 already on it, 0 continued in a new pane beside, 0 skipped, 1 failed. The workspace now uses Home; the failed panes stay on their account.');
+    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 already on it, 0 continued in a new pane beside, 0 skipped, 1 failed. The workspace now uses Home; new panes start on it.');
   });
 
   it('with the account signed out on Windows, switches only the WSL panes and skips the native ones', async () => {
