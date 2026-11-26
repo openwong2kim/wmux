@@ -58,6 +58,7 @@ import { checkClaim, claimHeldRefusal, claimStartTime, claimStillHeld, setPaneOf
 import type { ClaimRefusal } from '../../../shared/identityClaims';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import { withdrawStoredDeliveries } from './pendingDeliveries';
+import { parseBulkCancel, planBulkCancel, toCleanupRows, type BulkCancelRequest } from '../../../shared/a2aTaskCleanup';
 import {
   isRemoteWorkspaceId,
   remoteWorkspaceId,
@@ -252,6 +253,12 @@ function withDaemonHold(row: Record<string, unknown>, daemonRow: Record<string, 
 function paneOfPty(panes: ReadonlyArray<Record<string, unknown>>, ptyId: string): string | undefined {
   const pane = panes.find((p) => Array.isArray(p.surfacePtyIds) && p.surfacePtyIds.includes(ptyId));
   return pane ? (pane.id as string) : undefined;
+}
+
+/** One task of a bulk cancel, as a plain single-task cancel call. */
+function bulkFreeParams(params: Record<string, unknown>, taskId: string): Record<string, unknown> {
+  const { taskIds: _ids, state: _state, olderThanDays: _age, dryRun: _dry, idempotencyKey: _key, ...rest } = params;
+  return { ...rest, taskId };
 }
 
 async function daemonTaskRpc(
@@ -2361,6 +2368,8 @@ export function registerA2aRpc(
   registerAsCaller('a2a.task.cancel', cancelTask);
 
   async function cancelTask(params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<unknown> {
+    const bulk = parseBulkCancel(params);
+    if (bulk) return 'error' in bulk ? { error: `a2a.task.cancel: ${bulk.error}` } : cancelMany(params, ctx, bulk);
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     // The caller's pane, resolved here as for an update: a company task is
     // canceled only by the pane that created it (shared/company.ts).
@@ -2409,5 +2418,62 @@ export function registerA2aRpc(
       void recordTaskState(taskId, 'canceled');
     }
     return res;
+  }
+
+  /**
+   * Bulk cancel (#3068): the caller's own tasks, by id list or by state and
+   * idle time. Each task goes through cancelTask above, one at a time, so each
+   * keeps today's refusals and is logged as the caller. Needs the daemon's
+   * task log: the selection and the dry run are read from it.
+   */
+  async function cancelMany(params: Record<string, unknown>, ctx: RpcContext | undefined, bulk: BulkCancelRequest): Promise<unknown> {
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!workspaceId) return { error: 'a2a.task.cancel: workspaceId is required' };
+    const trustedLane = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
+    const callerPane = await resolveCallerPane(getWindow, workspaceId, params.senderPtyId);
+    const paneFields = {
+      ...(callerPane.kind === 'resolved' ? { callerPaneId: callerPane.paneId } : {}),
+      ...(trustedLane ? { trustedLane: true } : {}),
+    };
+    // The caller's view only: tasks its workspace sent or received, held company tasks left out.
+    const view = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
+      workspaceId,
+      view: 'state',
+      allTasks: true,
+      ...(bulk.selection.kind === 'filter' ? { status: bulk.selection.state } : {}),
+      ...paneFields,
+    });
+    if (view.kind === 'reject') return { error: view.error };
+    if (view.kind !== 'ok') return { error: 'a2a.task.cancel: a bulk cancel needs the task log, which is unavailable' };
+    const plan = planBulkCancel(bulk.selection, toCleanupRows(view.result.tasks), Date.now());
+    const refused: Array<{ taskId: string; error: string }> = [];
+    const errorOf = (res: unknown): string | null => {
+      if (isRecord(res) && res.ok === true) return null;
+      return isRecord(res) && typeof res.error === 'string' ? res.error : 'a2a.task.cancel: refused';
+    };
+    const done: string[] = [];
+    for (const taskId of plan.targets) {
+      // One task failing never loses the results already in hand.
+      let res: unknown;
+      try {
+        res = bulk.dryRun
+          ? await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', { taskId, workspaceId, ...paneFields, dryRun: true })
+              .then((g) => (g.kind === 'ok' ? g.result : g.kind === 'reject' ? { error: g.error } : { error: 'a2a.task.cancel: task log unavailable' }))
+          : await cancelTask(bulkFreeParams(params, taskId), ctx);
+      } catch (err) {
+        res = { error: `a2a.task.cancel: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const error = errorOf(res);
+      if (error) refused.push({ taskId, error });
+      else done.push(taskId);
+    }
+    return {
+      ok: true,
+      dryRun: bulk.dryRun,
+      ...(bulk.dryRun ? { wouldCancel: done } : { canceled: done }),
+      refused,
+      unchanged: plan.unchanged,
+      ...(plan.more > 0 ? { more: plan.more } : {}),
+    };
   }
 }

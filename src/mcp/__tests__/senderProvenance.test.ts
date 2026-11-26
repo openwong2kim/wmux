@@ -115,7 +115,7 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     const handler = /server\.tool\(\s*'a2a_task_cancel'[\s\S]*?\n\);/.exec(mcpIndexSrc)?.[0] ?? '';
     expect(handler).not.toBe('');
     expect(handler).toMatch(/const senderPtyId = getTaskSenderPtyId\(\);\s*if \(senderPtyId\) params\.senderPtyId = senderPtyId;/);
-    expect(handler).toMatch(/callRpc\('a2a\.task\.cancel', params\)/);
+    expect(handler).toMatch(/callRpc\('a2a\.task\.cancel', params[,)]/);
   });
 
   it('a2a_task_send is send_message\'s own handler, so a fenced worker\'s execute is refused on the same a2a.task.send path', () => {

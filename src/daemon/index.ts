@@ -200,6 +200,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, statusMessageFromWire } from './a2a/A2aTaskService';
+import { A2A_TASK_RETENTION_FILE, A2A_TASK_RETENTION_SWEEP_MS, parseRetentionFile, retentionMs } from '../shared/a2aTaskCleanup';
 import { parsePublicCreateTask } from './a2a/publicCreateParams';
 import { registerCompanyHoldRpc } from './a2a/companyHoldRpc';
 import { WorkTaskService } from './worktask/WorkTaskService';
@@ -7936,8 +7937,10 @@ function registerRpcHandlers(
       // Main sets this, as on a2a.task.update.
       ...(pipeServer.isFirstParty(ctx.clientId) && p.trustedLane === true ? { trustedLane: true } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
+      // A bulk cancel's dry run (#3068): the same checks, nothing written.
+      ...(p.dryRun === true ? { dryRun: true } : {}),
     });
-    if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+    if (canceled.ok && canceled.dryRun !== true && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
     return canceled;
   });
 
@@ -9366,6 +9369,27 @@ let a2aServerRef: A2aServer | null = null;
 let a2aDiscoverRef: DiscoverClient | null = null;
 let a2aDeliveryRef: A2aRemoteDelivery | null = null;
 
+/**
+ * One retention sweep (#3068): with Settings' number of days set, close each
+ * workspace's own tasks still `submitted` after that long, one log line per
+ * sweep. Off (no file, or no days) does nothing and logs nothing.
+ */
+async function sweepA2aRetention(svc: A2aTaskService): Promise<void> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(getWmuxDir(), A2A_TASK_RETENTION_FILE), 'utf-8');
+  } catch {
+    return;
+  }
+  const days = parseRetentionFile(raw);
+  if (days === null) return;
+  const { closed, refused, seen, skipped } = await svc.sweepStaleSubmitted(retentionMs(days));
+  for (const taskId of closed) {
+    if (isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+  }
+  log('info', `A2A retention sweep: closed ${closed.length} of ${seen} task(s) submitted over ${days} day(s)${refused > 0 ? `, ${refused} refused` : ''}${skipped > 0 ? `, ${skipped} changed meanwhile` : ''}`);
+}
+
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
 let channelWakeWorkerRef: ChannelWakeWorker | null = null;
 
@@ -10517,6 +10541,12 @@ async function main(): Promise<void> {
         svc.gcTerminalTasks();
       }, 5 * 60 * 1000);
       a2aGcInterval.unref();
+      // Retention (#3068): off unless Settings wrote a number of days. Read on
+      // every sweep, so a change applies without a daemon restart.
+      const a2aRetentionInterval = setInterval(() => {
+        void sweepA2aRetention(svc).catch((err) => log('warn', 'A2A retention sweep failed:', err));
+      }, A2A_TASK_RETENTION_SWEEP_MS);
+      a2aRetentionInterval.unref();
       log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
     } catch (err) {
       // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.

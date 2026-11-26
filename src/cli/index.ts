@@ -28,6 +28,7 @@ import { handleSecrets } from './commands/secretsCheck';
 import { handleRole } from './commands/role';
 import { handleDeck } from './commands/deck';
 import { handleChannel } from './commands/channel';
+import { handleTask } from './commands/task';
 import { handleRemote } from './commands/remote';
 import { handleWeb } from './commands/web';
 import { handleDaemon } from './commands/daemon';
@@ -215,6 +216,12 @@ CHANNEL COMMANDS (agent messaging — Channels v2 durable inbox)
 
   Works headless (talks to the daemon directly). Typical nudged-agent loop:
   unread → read → work → post → ack. Run 'wmux channel help' for details.
+
+TASK COMMANDS (your workspace's A2A tasks)
+  task cancel <task-id…>            Cancel tasks your workspace sent or received
+  task cancel --state <s> --older-than-days <n>
+                                    Cancel the ones in that state, unchanged that long
+                                    (--dry-run lists them; 'wmux task help' for details)
 
 REMOTE COMMANDS (another paired PC)
   remote spawn <pc> --agent <slug> --root <id> [--sub <path>] <prompt…>
@@ -427,6 +434,8 @@ async function main(): Promise<void> {
       await handleDeck(rest, jsonMode);
     } else if (cmd === 'channel') {
       await handleChannel(rest[0], rest.slice(1), jsonMode);
+    } else if (cmd === 'task') {
+      await handleTask(rest[0], rest.slice(1), jsonMode);
     } else if (cmd === 'remote') {
       await handleRemote(rest[0], rest.slice(1), jsonMode);
     } else {

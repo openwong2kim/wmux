@@ -508,7 +508,9 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
     const ids = Array.isArray(params.taskIds)
       ? new Set(params.taskIds.filter((v): v is string => typeof v === 'string').slice(0, STATE_VIEW_IDS_MAX))
       : null;
-    return tasks.filter((task) => (ids ? ids.has((task as Rec).id as string) : (task as Rec).id === params.taskId)).map((task) => {
+    // `allTasks`: every task in the caller's view (main's bulk cancel, #3068).
+    const all = params.allTasks === true && !ids && params.taskId === undefined;
+    return tasks.filter((task) => (all || (ids ? ids.has((task as Rec).id as string) : (task as Rec).id === params.taskId))).map((task) => {
       const row = task as Rec;
       const status = isRec(row.status) ? row.status : {};
       const metadata = isRec(row.metadata) ? row.metadata : {};

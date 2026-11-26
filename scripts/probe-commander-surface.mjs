@@ -64,6 +64,12 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   kinds of question its worker shows there. Full stays at 82000: it
 //   measures about 81,572 with it, 428 bytes of headroom, so the next full
 //   tool needs a raise.
+//   full: 82000 -> 83000 (a2a_task_cancel bulk fields, #3068). The full
+//   profile measured 82,139 bytes with them, 139 over, with the field
+//   descriptions already cut to a few words. task_ids, state,
+//   older_than_days and dry_run are how an agent clears its own stale tasks
+//   in one call instead of one call per task. Core and commander stay as
+//   they are.
 //   core: 49000 -> 50000 (fanout_bring_back, #3368). Core measured about
 //   48,790 bytes before it and 49,311 with it (the shortened tool, ~520
 //   bytes). fanout_start's remote shape and remote_spawn are already in core,

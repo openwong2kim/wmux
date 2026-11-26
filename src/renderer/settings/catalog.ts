@@ -216,6 +216,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'a2a', tab: 'roles', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
   { id: 'fanoutapproval', tab: 'roles', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
   { id: 'fanoutlivecap', tab: 'roles', labelKey: 'settings.fanoutLiveTaskCap', descKey: 'settings.fanoutLiveTaskCapDesc', synonyms: 'fanout fan-out cap limit live concurrent at once tasks brake 동시 한도' },
+  { id: 'a2ataskretention', tab: 'roles', labelKey: 'settings.a2aTaskRetention', descKey: 'settings.a2aTaskRetentionDesc', synonyms: 'a2a task tasks retention cleanup stale submitted close days auto 태스크 정리 보관 자동 닫기' },
   { id: 'fanouthourlycap', tab: 'roles', labelKey: 'settings.fanoutHourlyTaskCap', descKey: 'settings.fanoutHourlyTaskCapDesc', synonyms: 'fanout fan-out cap limit hourly per hour rate tasks brake 시간당 한도' },
   { id: 'workerfence', tab: 'roles', labelKey: 'settings.workerFence', descKey: 'settings.workerFenceDesc', synonyms: 'worker fence sandbox bot unattended bypass auto credentials 울타리 샌드박스 봇 워커' },
   { id: 'fanoutaccountpool', tab: 'roles', labelKey: 'settings.fanoutAccountPool', descKey: 'settings.fanoutAccountPoolDesc', synonyms: 'fanout fan-out account accounts pool spread quota workers group 계정 분산 풀' },
