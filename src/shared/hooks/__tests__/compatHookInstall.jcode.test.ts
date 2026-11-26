@@ -47,7 +47,7 @@ describe('jcode hook install', () => {
 
     const outcome = await installCompatHooks('jcode', paths);
     expect(outcome).toMatchObject({ ok: true, action: 'installed', before: 'absent' });
-    expect(fs.readFileSync(entry(), 'utf8').split('\n')[0]).toBe('// wmux-managed: jcode-hooks-bridge');
+    expect(fs.readFileSync(entry(), 'utf8').split(/\r?\n/)[0]).toBe('// wmux-managed: jcode-hooks-bridge');
     expect(fs.existsSync(path.join(home, '.wmux', 'hooks', 'wmux-hooks-bridge.mjs'))).toBe(true);
     const cmd = tomlHookCommand(entry()) as string;
     const text = fs.readFileSync(configFile(), 'utf8');
