@@ -59,6 +59,26 @@ export function warmRustSnapshot(): void {
   catch { /* the first snapshot reports a load error itself */ }
 }
 
+/**
+ * Parse time a snapshot spends between two yields to the event loop. The feed
+ * goes in 256 KiB slices (~1.5 ms each natively); yielding after every slice
+ * made a snapshot wait one whole loop turn per slice, and under heavy output a
+ * turn is tens of milliseconds, so a 3 MiB ring took ~20 times its parse time
+ * while it held the shared snapshot queue (#3510). Yielding once this much
+ * parse has run keeps each block near 10 ms, and spends far fewer turns.
+ */
+export const SNAPSHOT_YIELD_AFTER_MS = 8;
+
+/** Yields to the event loop once SNAPSHOT_YIELD_AFTER_MS of parse ran since the last yield. */
+function parseYielder(): () => Promise<void> {
+  let since = performance.now();
+  return async () => {
+    if (performance.now() - since < SNAPSHOT_YIELD_AFTER_MS) return;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    since = performance.now();
+  };
+}
+
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'text'): Promise<TextSnapshotOutcome>;
 export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 'text'): Promise<SnapshotOutcome | TextSnapshotOutcome> {
@@ -79,6 +99,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     const nativeTerminal = new native.NativeTerminal(cols, rows, scrollback);
     term = nativeTerminal;
     let carry = Buffer.alloc(0);
+    const yieldToLoop = parseYielder();
     let bytesIn = 0;
     // Set once the native terminal refuses the ANSI snapshot for good and has
     // scanned its bounded stretch past the refusal for other refusal families
@@ -103,7 +124,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
           // pending tail natively, as ansiStreamScan does for xterm.
           if (kind !== 'ansi') nativeTerminal.feed(bytes);
           else if (nativeTerminal.feedXterm(bytes, requested)) { refused = true; return true; }
-          await new Promise<void>(resolve => setImmediate(resolve));
+          await yieldToLoop();
         }
         if (performance.now() - started > (req.budgetMs ?? 4000)) {
           if (!refusedAlready()) return false;
@@ -127,7 +148,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
           const next = Math.min(position + 256 * 1024, end);
           nativeTerminal.feedFrozen(source, position, next);
           position = next;
-          await new Promise<void>(resolve => setImmediate(resolve));
+          await yieldToLoop();
           if (performance.now() - started > (req.budgetMs ?? 4000)) return false;
         }
         return true;

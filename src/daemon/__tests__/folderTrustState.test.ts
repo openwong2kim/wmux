@@ -515,27 +515,36 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
   it('a whole-ring parse runs in a lane of its own: it decides within a delivery budget while attach flushes hold the small slots, and leaves those slots free', async () => {
     const s = longAfter(frame(IDLE), spinner, '\x1b[31;1H\x1b[K');
     const actual = await vi.importActual<typeof import('../HeadlessSnapshot')>('../HeadlessSnapshot');
-    // How many small slots a new pane's attach flush could take while the whole ring parses.
+    // How many small slots a new pane's attach flush could take while the whole
+    // ring parses, next to how many the attach flushes still hold then: every
+    // slot no flush holds is free (the tail may end before the other flushes do).
     const freeSlots: number[] = [];
+    const slotsNotFlushing: number[] = [];
+    let flushing = 0;
     vi.mocked(generateTextSnapshotUnqueued).mockImplementation(async (req) => {
       if (req.initial.length > 512 * 1024) {
         let free = 0;
         for (let n = 0; n < SMALL_SNAPSHOT_CONCURRENCY; n++) void runSmallSnapshotJob(async () => { free++; });
         freeSlots.push(free);
+        slotsNotFlushing.push(SMALL_SNAPSHOT_CONCURRENCY - flushing);
       }
       return actual.generateTextSnapshotUnqueued(req);
     });
     // Attach flushes hold every small slot when the request comes, and other
     // panes' snapshots hold the shared queue.
     const flushes = Array.from({ length: SMALL_SNAPSHOT_CONCURRENCY }, () =>
-      runSmallSnapshotJob(() => deliberateSleep(150, 'an attach flush holding a small slot')));
+      runSmallSnapshotJob(async () => {
+        flushing++;
+        try { await deliberateSleep(150, 'an attach flush holding a small slot'); } finally { flushing--; }
+      }));
     let unblock: (() => void) | undefined;
     const busy = enqueueSnapshotJob(() => new Promise<void>((resolve) => { unblock = resolve; }));
     try {
       const started = Date.now();
       expect(await readFolderTrust(deps(s, { timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }), 'pty-1')).toEqual({ state: 'clear' });
       expect(Date.now() - started).toBeLessThan(FOLDER_TRUST_DELIVERY_BUDGET_MS);
-      expect(freeSlots).toEqual([SMALL_SNAPSHOT_CONCURRENCY]);
+      expect(freeSlots).toHaveLength(1);
+      expect(freeSlots).toEqual(slotsNotFlushing);
     } finally {
       vi.mocked(generateTextSnapshotUnqueued).mockImplementation(actual.generateTextSnapshotUnqueued);
       unblock?.();
