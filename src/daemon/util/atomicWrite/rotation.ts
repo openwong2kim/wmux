@@ -49,6 +49,15 @@ export const BACKUP_SUFFIXES = ['.bak', '.bak.1', '.bak.2', '.bak.3'] as const;
 
 export type BackupSuffix = (typeof BACKUP_SUFFIXES)[number];
 
+/**
+ * True when the primary or any backup slot exists: the files a sync read walks.
+ * Callers check this before the read to tell "nothing on disk" (first boot)
+ * from "on disk but unreadable" when the read returns null (#3247).
+ */
+export function stateSlotsOnDisk(primary: string): boolean {
+  return [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`)].some((p) => fs.existsSync(p));
+}
+
 // ── Internal helpers ────────────────────────────────────────────────
 
 async function unlinkIfExists(p: string): Promise<void> {

@@ -8,6 +8,7 @@ import {
   createMigrator,
   DAEMON_STATE_REGISTRY,
   BACKUP_SUFFIXES,
+  stateSlotsOnDisk,
 } from './util/atomicWrite';
 import { keptCopiesOf } from './util/atomicWrite/quarantine';
 import { AsyncQueue } from './util/AsyncQueue';
@@ -167,6 +168,9 @@ const PENDING_RECOVERY_TTL_HOURS = 30 * 24;
 // which covers the reported 11-12-day orphans' daemon-restart cadence without
 // letting a record live forever on the strength of a recycled pid.
 const DEAD_TOMBSTONE_LIVE_PID_TTL_MULTIPLIER = 7;
+
+/** How a state file read went; see StateWriter.loadWithStatus. */
+export type StateLoadStatus = 'loaded' | 'missing' | 'unreadable';
 
 /**
  * Persists DaemonState (sessions.json) to disk using the shared
@@ -379,7 +383,20 @@ export class StateWriter {
 
   /** Load state from disk. Falls back to .bak on failure. Prunes expired DEAD sessions. */
   load(): DaemonState {
+    return this.loadWithStatus().state;
+  }
+
+  /**
+   * load(), plus whether the file was read. `unreadable` means the primary or a
+   * backup was on disk but none of them could be read or validated; the state
+   * is then empty and must not be acted on as if the user had no sessions
+   * (#3247). `missing` is a genuine first boot: nothing on disk at all.
+   */
+  loadWithStatus(): { status: StateLoadStatus; state: DaemonState } {
     const empty: DaemonState = { version: 1, sessions: [] };
+    // Checked before the read: a primary that fails validation is quarantined
+    // (moved away) by the read itself, so afterwards it would look missing.
+    const onDisk = stateSlotsOnDisk(this.filePath);
 
     let state: DaemonState | null = null;
     try {
@@ -402,7 +419,7 @@ export class StateWriter {
     }
 
     if (!state) {
-      return empty;
+      return { status: onDisk ? 'unreadable' : 'missing', state: empty };
     }
 
     // Prune expired sessions. Three paths:
@@ -539,7 +556,7 @@ export class StateWriter {
       this.saveImmediate(state);
     }
 
-    return state;
+    return { status: 'loaded', state };
   }
 
   /** Flush pending debounce — if there is pending state, write it immediately. */

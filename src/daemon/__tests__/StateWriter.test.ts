@@ -1044,3 +1044,33 @@ it('keeps a record released after an outage longer than the TTL, with its buffer
   writer.saveImmediate(makeState([stale]));
   expect(writer.load().sessions).toHaveLength(0);
 });
+
+// #3247: a file that is on disk but cannot be read must not read as "no sessions".
+describe('loadWithStatus', () => {
+  const file = () => path.join(tmpDir, 'sessions.json');
+
+  it('reports missing on a first boot with nothing on disk', () => {
+    expect(writer.loadWithStatus()).toEqual({ status: 'missing', state: { version: 1, sessions: [] } });
+  });
+
+  it('reports unreadable when the primary does not parse and there is no backup', () => {
+    fs.writeFileSync(file(), '{ not json');
+    const result = writer.loadWithStatus();
+    expect(result.status).toBe('unreadable');
+    expect(result.state.sessions).toHaveLength(0);
+    expect(fs.existsSync(file())).toBe(true);
+  });
+
+  it('reports unreadable when the read quarantines a primary that fails validation', () => {
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, sessions: 'nope' }));
+    expect(writer.loadWithStatus().status).toBe('unreadable');
+  });
+
+  it('reports loaded when a bad primary falls back to a good backup', () => {
+    fs.writeFileSync(file(), '{ not json');
+    fs.writeFileSync(`${file()}.bak`, JSON.stringify(makeState([makeSession()])));
+    const result = writer.loadWithStatus();
+    expect(result.status).toBe('loaded');
+    expect(result.state.sessions.map((s) => s.id)).toEqual(['sess-1']);
+  });
+});
