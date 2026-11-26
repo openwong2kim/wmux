@@ -205,6 +205,7 @@ export const NON_MANIFEST_INTEGRATIONS = {
   kiro: 'hooks live inside a wmux-owned agent config, not a hooks.json; covered explicitly',
   opencode: 'in-process plugin, not a spawned hook; measured separately',
   shared: 'not an agent — shared type declarations',
+  omp: 'in-process extension module, not a spawned hook; each event runs the shared bridge (flavour omp), covered explicitly',
   agy: 'statusLine quota sensor (quota-sink.js) registered in settings.json, not a hooks.json; reads stdin, writes only to ~/.wmux/quota/agy.json, no tool/model hooks',
 };
 
