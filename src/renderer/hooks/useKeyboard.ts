@@ -563,7 +563,7 @@ export function useKeyboard() {
             for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
             destroyWorkspaceRemoteSessions(ws); // #1129 — same reasoning, no ptyId
           }
-          state.removeWorkspace(ws?.id ?? state.activeWorkspaceId);
+          state.removeWorkspace(state.activeWorkspaceId);
         });
       },
       // Jump to the latest unread notification's workspace.
