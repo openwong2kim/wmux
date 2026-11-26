@@ -182,3 +182,17 @@ describe('buildHookEnvelope — rules every flavour inherits', () => {
     expect(buildHookEnvelope('copilot', {}, { env, now: 1, event: 'Stop' })?.cwd).toBe(process.cwd());
   });
 });
+
+// #3276 — omp's extension module runs the bridge with omp's own event names
+// and {session_id, cwd} on stdin.
+describe('buildHookEnvelope — omp flavour', () => {
+  it('maps omp lifecycle events to the pane states', () => {
+    const envelope = (event: string) => buildHookEnvelope('omp', { session_id: 'sess-1', cwd: '/r' }, { env, now: 1, event });
+    expect(envelope('session_start')).toMatchObject({ kind: 'agent.session_start', agent: 'omp', agentSessionId: 'sess-1', ptyId: 'pty-7' });
+    expect(envelope('before_agent_start')?.kind).toBe('agent.user_prompt_submit');
+    expect(envelope('agent_end')?.kind).toBe('agent.stop');
+    expect(envelope('tool_approval_requested')?.kind).toBe('agent.awaiting_input');
+    expect(envelope('session_shutdown')?.kind).toBe('agent.session_end');
+    for (const event of Object.keys(FLAVOURS.omp.events)) expect(isAgentSignal(envelope(event)), event).toBe(true);
+  });
+});

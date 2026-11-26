@@ -45,3 +45,11 @@ describe('setup-hooks --agent --reprobe', () => {
     expect(installCompatHooks).not.toHaveBeenCalled();
   });
 });
+
+// #3276 — omp is wired: its extension module goes through the same lane.
+describe('setup-hooks --agent omp', () => {
+  it('is accepted and handed to the installer', async () => {
+    await handleSetupHooks(['--agent', 'omp'], true);
+    expect(installCompatHooks).toHaveBeenLastCalledWith('omp', { marker: 'paths' }, { reprobe: false });
+  });
+});

@@ -4,7 +4,8 @@
 // loads hooks from, which events to register and in which command form. Only
 // the `owned-file` strategy is wired (GitHub Copilot CLI): wmux writes a file of
 // its own into a directory the CLI scans, so no user settings file is ever
-// parsed or rewritten, and uninstall is deleting that file.
+// parsed or rewritten, and uninstall is deleting that file. The `owned-module`
+// strategy (Oh My Pi) is the same, with a shipped extension module as the file.
 //
 // Idempotent by construction: install refreshes only a file whose every entry
 // runs the shared bridge for this flavour (the ownership proof), reports
@@ -90,6 +91,9 @@ export interface CompatHookPaths {
    * on the directory the CLI itself reads.
    */
   configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>>;
+  /** Each owned-module flavour's shipped module, or null when this build has
+   *  none to copy. */
+  moduleSources?: Partial<Record<CompatHookFlavourId, string | null>>;
 }
 
 /**
@@ -104,7 +108,7 @@ export function resolveCompatHookConfigDir(
   env: Readonly<Record<string, string | undefined>>,
 ): CompatHookConfigDir | null {
   const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
-  if (!install || install.strategy !== 'owned-file') return null;
+  if (!install || install.strategy === 'settings-hooks-key') return null;
   const override = install.configDirEnv ? env[install.configDirEnv]?.trim() : undefined;
   if (override) return { dir: path.resolve(override), source: 'env' };
   return { dir: path.join(home, ...install.configDir), source: 'home' };
@@ -151,14 +155,20 @@ export function resolveCompatHookPaths(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): CompatHookPaths {
   const configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>> = {};
+  const moduleSources: Partial<Record<CompatHookFlavourId, string | null>> = {};
   for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
     const resolved = resolveCompatHookConfigDir(id, home, env);
     if (resolved) configDirs[id] = resolved;
+    const install = COMPAT_HOOK_FLAVOURS[id].install;
+    if (install?.strategy === 'owned-module') {
+      moduleSources[id] = findLifecycleAssetSourceFrom(startDir, install.moduleBasename, install.moduleSource);
+    }
   }
   const nativeSource = findNativeHooksSource(startDir);
   return {
     home,
     configDirs,
+    moduleSources,
     nativeHooks: nativeSource
       ? {
         sourcePath: nativeSource,
@@ -187,8 +197,31 @@ export function compatHookConfigPath(
 ): string | null {
   const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
   const configDir = paths.configDirs[flavourId];
-  if (!install || install.strategy !== 'owned-file' || !configDir) return null;
+  if (!install || install.strategy === 'settings-hooks-key' || !configDir) return null;
   return path.join(configDir.dir, ...install.file);
+}
+
+/** The module copy of an owned-module flavour, as a lifecycle asset, or null. */
+function compatHookModuleSpec(
+  flavourId: CompatHookFlavourId,
+  paths: Pick<CompatHookPaths, 'configDirs' | 'moduleSources'>,
+): LifecycleAssetSpec | null {
+  const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
+  const destinationPath = compatHookConfigPath(flavourId, paths);
+  if (install?.strategy !== 'owned-module' || !destinationPath) return null;
+  return { sourcePath: paths.moduleSources?.[flavourId] ?? null, destinationPath, ownershipMarkers: [install.marker] };
+}
+
+/** A module copy's asset state, in the config states the other strategy reports. */
+function moduleConfigState(state: LifecycleAssetStatus['state']): CompatHookConfigState {
+  switch (state) {
+    case 'current': return 'current';
+    case 'stale': return 'stale';
+    case 'missing': return 'absent';
+    case 'foreign': return 'foreign';
+    // An unreadable copy, or no shipped module to compare it with.
+    default: return 'malformed';
+  }
 }
 
 interface ExecLeaf {
@@ -326,12 +359,21 @@ function describeNativeHooks(
 
 export function inspectCompatHookConfig(
   flavourId: CompatHookFlavourId,
-  paths: Pick<CompatHookPaths, 'configDirs'>,
+  paths: Pick<CompatHookPaths, 'configDirs' | 'moduleSources'>,
   bridgePath: string,
   nativePath: string | null = null,
 ): { state: CompatHookConfigState; configPath: string | null } {
   const configPath = compatHookConfigPath(flavourId, paths);
   if (!configPath) return { state: 'unsupported', configPath: null };
+  const moduleSpec = compatHookModuleSpec(flavourId, paths);
+  if (moduleSpec) {
+    const asset = inspectLifecycleAsset(moduleSpec);
+    // With no shipped module to compare against, a wmux copy is still wmux's.
+    if (asset.state === 'source-missing') {
+      return { state: inspectOwnedModuleWithoutSource(moduleSpec), configPath };
+    }
+    return { state: moduleConfigState(asset.state), configPath };
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf8');
@@ -349,6 +391,20 @@ export function inspectCompatHookConfig(
   const wanted = JSON.stringify(buildOwnedHookFile(flavourId, bridgePath, nativePath));
   return { state: JSON.stringify(parsed) === wanted ? 'current' : 'stale', configPath };
 }
+
+/** A module copy judged by its marker alone (no shipped source to compare). */
+function inspectOwnedModuleWithoutSource(spec: LifecycleAssetSpec): CompatHookConfigState {
+  let text: string;
+  try {
+    text = fs.readFileSync(spec.destinationPath, 'utf8');
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'malformed';
+  }
+  return spec.ownershipMarkers.some((marker) => text.includes(marker)) ? 'stale' : 'foreign';
+}
+
+/** `node <bridge>` is the only form an omp-style module runs. */
+const MODULE_RUNS_NODE = 'the extension runs `node <bridge>`';
 
 export interface CompatHookInstallOutcome {
   ok: boolean;
@@ -470,6 +526,13 @@ export async function installCompatHooks(
     // missing file for every event. Write nothing.
     return { ...stopped, ok: false, bridge, before: owned, error: bridge.error };
   }
+  const moduleSpec = compatHookModuleSpec(flavourId, paths);
+  if (moduleSpec) {
+    const copied = installLifecycleAsset(moduleSpec);
+    const base = { flavour: flavourId, configPath, native: null, nativeSummary: MODULE_RUNS_NODE, bridge, before: owned };
+    if (copied.state !== 'current') return { ...base, ok: false, action: 'none', error: copied.error ?? `extension module ${copied.state}` };
+    return { ...base, ok: true, action: copied.action, error: null };
+  }
   const installed = await installNativeHooks(paths.nativeHooks, opts);
   const native = installed?.outcome ?? null;
   const nativePath = installed?.active ?? null;
@@ -540,7 +603,9 @@ export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatH
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,
-    nativeSummary: describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
+    nativeSummary: compatHookModuleSpec(flavourId, paths)
+      ? MODULE_RUNS_NODE
+      : describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
     configPath,
     configDirSource: paths.configDirs[flavourId]?.source ?? null,
     config: state,

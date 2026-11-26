@@ -74,7 +74,19 @@ native bridge still recognises the file as its own. `--status` says which form
 the entries use and why, and never runs the binary. On Windows the binary ships
 only once it is signed.
 
-Only Copilot is installed this way. Kiro hooks are set up by hand (see
+`wmux setup-hooks --agent omp` (with `--status` or `--remove`) does the same
+for Oh My Pi, which runs no hook commands: it imports every module in
+`~/.omp/agent/extensions/` (`$PI_CODING_AGENT_DIR/extensions/` when that is
+set). wmux copies its own module there as `wmux.js`
+(`integrations/omp/extensions/wmux.js`, first line
+`// wmux-managed: omp-extension`). The module subscribes to omp's
+`session_start`, `before_agent_start`, `agent_end`, `tool_approval_requested`
+and `session_shutdown`, and for each one runs `node <bridge> omp <event>` with
+only `{session_id, cwd}` on stdin; subagent sessions, and an `agent_end` that
+omp continues on its own, are skipped. Outside a wmux pane it does nothing.
+A module at that path without the marker is left alone.
+
+Only Copilot and omp are installed this way. Kiro hooks are set up by hand (see
 `integrations/kiro/README.md`), and wmux installs no hooks for Gemini or Qwen;
 those keep whatever command you wrote. A shell-form command (`node "<path>" <flavour> <Event>`) starts
 with a bare `node` because PowerShell cannot run a line that begins with a quoted
@@ -96,6 +108,7 @@ not yet seen working.
 | Kiro CLI 2.x (`kiro`) | [2.x hooks](https://kiro.dev/docs/cli/2x-reference/#hooks) | An agent config, `~/.kiro/agents/<name>.json` | camelCase: `agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop` | No session id / `cwd` | `command` (shell) | **Shared bridge, flavour `kiro`** (moved from its own bridge; same envelopes). Manual install, see `integrations/kiro/README.md`. Live, 2.15.1. |
 | Kiro, unified hooks | [hooks](https://kiro.dev/docs/hooks/) | `.kiro/hooks/*.json` | `PromptSubmit`/`promptSubmit`, `AgentStop`/`agentStop`, `SessionStart`, `SessionEnd`, `preToolUse`, … | Not documented | Not documented | Not supported yet. The stdin fields are not documented. |
 | Cursor CLI (no slug) | [hooks](https://cursor.com/docs/agent/hooks) | `~/.cursor/hooks.json`, `.cursor/hooks.json` | camelCase: `sessionStart`, `beforeSubmitPrompt`, `stop`, `sessionEnd`, `preToolUse`, … | `conversation_id` on every event, `session_id` on session events / `workspace_roots`, no `cwd` | `command` (shell) | Not in the registry. Cursor also loads Claude Code hooks from `~/.claude/settings.json` (see below). |
+| Oh My Pi (`omp`) | [hooks](https://omp.sh/docs/hooks); extension API in `@oh-my-pi/pi-coding-agent` (`src/extensibility/extensions/types.ts`) | Extension modules, `~/.omp/agent/extensions/*.{ts,js}` | omp's own: `session_start`, `before_agent_start`, `agent_end`, `tool_approval_requested`, `session_shutdown`, … | The module passes `ctx.sessionManager.getSessionId()` / `ctx.cwd` as `session_id` / `cwd` | `node`, spawned by the module with no shell | **Shared bridge, flavour `omp`**, through wmux's extension module. Opt-in installer (honours `PI_CODING_AGENT_DIR`). Live, 19.2.1 on macOS (print mode). |
 | Qwen Code (no slug) | [hooks](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md) | `~/.qwen/settings.json` `hooks`, `.qwen/settings.json` | Claude's names, plus extras (`PostToolBatch`, `TodoCreated`, …) | `session_id` / `cwd` | `command`, with `"shell": "bash" \| "powershell"` | Not in the registry. Would be a flavour row identical to Claude's names. |
 
 ### Known cross-tool risk
@@ -114,6 +127,14 @@ fixed here; it is the same class of problem as #1823.
   `COPILOT_HOME` set it does not read `~/.copilot/hooks/`. Cancelling a
   permission prompt with Esc fires no hook at all, so wmux clears the pane's
   waiting card when it sees the prompt answered at the terminal (#1918).
+
+- omp 19.2.1 on macOS (2026-11-26), `omp -p` under a throwaway `HOME`: the
+  module loaded from `~/.omp/agent/extensions/wmux.js` and the bridge sent
+  `agent.session_start`, `agent.user_prompt_submit`, `agent.stop` and
+  `agent.session_end` with the pane's `WMUX_PTY_ID` and omp's session id.
+  Print mode exits as soon as `agent_end` returns, which is why the module
+  hands the bridge its stdin as a file and starts the last runs inside the
+  handler. `tool_approval_requested` was not exercised.
 
 ### Unknowns to settle on a live CLI
 
