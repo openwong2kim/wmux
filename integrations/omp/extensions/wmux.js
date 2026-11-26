@@ -48,7 +48,9 @@ const BRIDGE_BASENAME = 'wmux-hooks-bridge.mjs';
 const RUN_WAIT_MS = 3000;
 
 /** The omp events this module forwards. Each is mapped in the bridge's `omp` row. */
-export const EVENTS = ['session_start', 'before_agent_start', 'agent_end', 'tool_approval_requested', 'session_shutdown'];
+export const EVENTS = [
+  'session_start', 'before_agent_start', 'agent_end', 'tool_approval_requested', 'tool_approval_resolved', 'session_shutdown',
+];
 
 /** Whether an event is the main session's and marks a state change. */
 function forwards(name, event, ctx) {
@@ -56,6 +58,8 @@ function forwards(name, event, ctx) {
   // Not a settle: omp continues on its own, or a parked subagent wakes.
   if (name === 'agent_end' && event?.willContinue === true) return false;
   if (name === 'before_agent_start' && event?.reason === 'revive') return false;
+  // Without a UI (print, RPC) omp denies an approval at once: nobody waits.
+  if (name.startsWith('tool_approval_') && ctx?.hasUI === false) return false;
   return true;
 }
 
@@ -83,9 +87,12 @@ export function createWmuxExtension({
     if (!env.WMUX_PTY_ID) return;
     let queue = Promise.resolve();
     let pending = 0;
+    // After session_shutdown a run still queued would land after session_end.
+    let closed = false;
 
     /** Starts one bridge run now; resolves when it is over (or has had its time). */
     const run = (name, payload) => new Promise((resolve) => {
+      if (closed && name !== 'session_shutdown') { resolve(); return; }
       const file = join(tempDir, `wmux-omp-${process.pid}-${randomBytes(6).toString('hex')}.json`);
       let fd = null;
       let done = false;
@@ -131,6 +138,7 @@ export function createWmuxExtension({
           if (!forwards(name, event, ctx)) return;
           const payload = { session_id: sessionIdOf(ctx), cwd: typeof ctx?.cwd === 'string' ? ctx.cwd : undefined };
           pending += 1;
+          if (name === 'session_shutdown') closed = true;
           if (pending === 1 || name === 'session_shutdown') {
             queue = run(name, payload).then(settled);
           } else {

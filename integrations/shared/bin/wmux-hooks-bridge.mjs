@@ -166,6 +166,7 @@ export const FLAVOURS = {
       before_agent_start: { kind: 'agent.user_prompt_submit' },
       agent_end: { kind: 'agent.stop' },
       tool_approval_requested: { kind: 'agent.awaiting_input' },
+      tool_approval_resolved: { kind: 'agent.input_answered' },
       session_shutdown: { kind: 'agent.session_end' },
     },
     sessionIdFields: ['session_id'],

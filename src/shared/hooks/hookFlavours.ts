@@ -279,7 +279,7 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
     // omp 19.2.1 on macOS, 2026-11-26 (#3276), `omp -p` under a throwaway
     // HOME: the module loaded and session_start, before_agent_start, agent_end
     // and session_shutdown reached hooks.signal with the pane's WMUX_PTY_ID.
-    // tool_approval_requested was not exercised.
+    // The approval events were not exercised.
     verified: 'live',
     // omp's own event names. The module passes the name in argv and writes
     // only {session_id, cwd} on stdin; nothing else of omp's events leaves it.
@@ -288,6 +288,8 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       before_agent_start: { kind: 'agent.user_prompt_submit' },
       agent_end: { kind: 'agent.stop' },
       tool_approval_requested: { kind: 'agent.awaiting_input' },
+      // Approved or denied at the terminal: the waiting card goes.
+      tool_approval_resolved: { kind: 'agent.input_answered' },
       session_shutdown: { kind: 'agent.session_end' },
     },
     sessionIdFields: ['session_id'],
@@ -303,7 +305,7 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       configDir: ['.omp', 'agent'],
       configDirEnv: 'PI_CODING_AGENT_DIR',
       file: ['extensions', 'wmux.js'],
-      register: ['session_start', 'before_agent_start', 'agent_end', 'tool_approval_requested', 'session_shutdown'],
+      register: ['session_start', 'before_agent_start', 'agent_end', 'tool_approval_requested', 'tool_approval_resolved', 'session_shutdown'],
       moduleBasename: 'wmux-omp-extension.js',
       moduleSource: ['integrations', 'omp', 'extensions', 'wmux.js'],
       marker: 'wmux-managed: omp-extension',

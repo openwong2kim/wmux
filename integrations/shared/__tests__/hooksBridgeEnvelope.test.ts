@@ -192,6 +192,7 @@ describe('buildHookEnvelope — omp flavour', () => {
     expect(envelope('before_agent_start')?.kind).toBe('agent.user_prompt_submit');
     expect(envelope('agent_end')?.kind).toBe('agent.stop');
     expect(envelope('tool_approval_requested')?.kind).toBe('agent.awaiting_input');
+    expect(envelope('tool_approval_resolved')?.kind).toBe('agent.input_answered');
     expect(envelope('session_shutdown')?.kind).toBe('agent.session_end');
     for (const event of Object.keys(FLAVOURS.omp.events)) expect(isAgentSignal(envelope(event)), event).toBe(true);
   });

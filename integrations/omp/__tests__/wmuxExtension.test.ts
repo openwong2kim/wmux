@@ -77,8 +77,19 @@ describe('omp wmux extension', () => {
     expect(fs.readdirSync(tempDir)).toEqual([]);
   });
 
-  it('ignores subagents, non-terminal settles and revives', async () => {
+  it('starts nothing that was still queued once session_shutdown ran', async () => {
     const { runs, handlers, ctx, settle } = harness();
+    handlers.get('before_agent_start')?.({ type: 'before_agent_start', reason: 'prompt' }, ctx());
+    handlers.get('agent_end')?.({ type: 'agent_end', messages: [] }, ctx());
+    handlers.get('session_shutdown')?.({ type: 'session_shutdown' }, ctx());
+    await settle();
+    expect(runs.map((r) => r.args[2])).toEqual(['before_agent_start', 'session_shutdown']);
+  });
+
+  it('ignores subagents, non-terminal settles, revives, and approvals with no UI', async () => {
+    const { runs, handlers, ctx, settle } = harness();
+    handlers.get('tool_approval_requested')?.({ type: 'tool_approval_requested' }, { ...ctx(), hasUI: false });
+    handlers.get('tool_approval_resolved')?.({ type: 'tool_approval_resolved', approved: false }, { ...ctx(), hasUI: false });
     handlers.get('agent_end')?.({ type: 'agent_end', messages: [] }, ctx('sub'));
     handlers.get('agent_end')?.({ type: 'agent_end', messages: [], willContinue: true }, ctx());
     handlers.get('before_agent_start')?.({ type: 'before_agent_start', reason: 'revive', prompt: '' }, ctx());
