@@ -32,7 +32,7 @@ import type { AgentSignalKind } from './signal-types';
 
 /** Every flavour the shared bridge serves. A subset of the registry's
  *  `AgentHooksFlavour`, which also names the bespoke bridges. */
-export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini' | 'qwen' | 'omp'>;
+export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini' | 'qwen' | 'omp' | 'jcode'>;
 
 /** One dialect event → one wmux signal kind, optionally only when a payload
  *  field equals a value. */
@@ -310,6 +310,31 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       moduleSource: ['integrations', 'omp', 'extensions', 'wmux.js'],
       marker: 'wmux-managed: omp-extension',
     },
+  },
+  jcode: {
+    id: 'jcode',
+    agent: 'jcode',
+    docs: ['https://github.com/1jehuang/jcode/blob/master/docs/HOOKS.md'],
+    verified: 'docs',
+    // jcode's observer events. It passes JCODE_HOOK_* variables, not JSON on
+    // stdin; integrations/jcode/bin/wmux-jcode-bridge.mjs builds the payload
+    // and maps `JCODE_HOOK_SOURCE` create to startup and resume to resume
+    // (any other start, such as attach, sends nothing). jcode has no approval
+    // event yet, so awaiting_input stays with the screen.
+    events: {
+      session_start: { kind: 'agent.session_start' },
+      turn_start: { kind: 'agent.user_prompt_submit' },
+      turn_end: { kind: 'agent.stop' },
+      session_end: { kind: 'agent.session_end' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: 'source',
+    configLocations: [
+      '~/.jcode/config.toml `[hooks]` (user; a command string or an array per event)',
+      'JCODE_HOOK_TURN_START and the other JCODE_HOOK_<EVENT> variables (override the config)',
+    ],
+    install: null,
   },
 };
 
