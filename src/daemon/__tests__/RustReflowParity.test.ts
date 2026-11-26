@@ -38,7 +38,8 @@ describe.skipIf(!available)('Rust ANSI snapshot parity across reflowing resizes'
         return difference?.startsWith('state 2: ') ? undefined : difference ?? 'no longer differs: move it out of the known gaps';
       },
       // The row the history cap cut a paragraph at: a continuation on the
-      // live terminal, which no payload can begin with. The rest matches.
+      // live terminal, which no payload can begin with (an accepted
+      // deviation, _rustParity.ts). The rest matches.
       'random-3-50': (req, payload) => liveDifferenceExcept(req, payload, (state) => { if (state.rows[0]) state.rows[0].wrapped = false; }),
     };
     for (const c of randomResizeCases(3, 60)) {
