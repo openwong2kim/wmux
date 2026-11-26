@@ -782,6 +782,14 @@ function logCwdResolution(
   console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why}, source=${source})`);
 }
 
+/**
+ * #3443 — a create whose folder is gone names it on its result, so the pane
+ * can say once that it opened in home instead. Absent otherwise.
+ */
+export function missingCwdResult(resolution: ResolvedPtyCwd): { missingCwd?: string } {
+  return resolution.missingCwd && !resolution.safeCwd ? { missingCwd: resolution.missingCwd } : {};
+}
+
 // Per main process, across handler registrations (daemon generations): a
 // second ring flush of a session reaches the renderer reset-led, so it
 // repaints the pane instead of repeating it (replayResetGate.ts).
@@ -1457,7 +1465,7 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      return { id: sessionId, shell, cwd: effectiveCwd, ...paneFenceResult(paneFence) };
+      return { id: sessionId, shell, cwd: effectiveCwd, ...missingCwdResult(cwdResolution), ...paneFenceResult(paneFence) };
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
@@ -1608,7 +1616,7 @@ export function registerPTYHandlers(
           initialCmd.onFirstData();
         });
       }
-      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...paneFenceResult(paneFence) };
+      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...missingCwdResult(cwdResolution), ...paneFenceResult(paneFence) };
     }));
   }
 

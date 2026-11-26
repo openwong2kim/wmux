@@ -59,6 +59,7 @@ import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS, joinWrappedRows } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError, type WslTarget } from '../shared/wsl';
+import { isUncOrDevicePath } from '../shared/cwdShape';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1313,6 +1314,9 @@ const recoveredResumeBindings = new Map<string, ResumeBinding>();
 // idle. One-shot: cleared with the offer, and by the first submit into the
 // pane (the automatic resume line itself, or anything typed before it).
 const recoveredWasRunning = new Set<string>();
+// #3443 — a recovered plain pane's folder that was gone, so it started in home.
+// Listed as `lostCwd`; the renderer tells the pane once.
+const recoveredLostCwd = new Map<string, string>();
 
 /**
  * Spends a recovered pane's owed continue, in memory and on its record
@@ -1494,6 +1498,11 @@ function recoveryCwdLogged(session: { id?: string; cmd: string; cwd: string }): 
   const cwd = recoveryCwd(session);
   if (isWslShell(session.cmd) && cwd !== session.cwd) {
     log('warn', `[recovery] ${session.id ?? 'session'}: stored WSL cwd ${JSON.stringify(session.cwd)} cannot be entered; starting in ${cwd}`);
+  } else if (session.cwd && cwd !== session.cwd && !isUncOrDevicePath(session.cwd) && !fs.existsSync(session.cwd)) {
+    // #3443 — a plain pane whose folder is gone: listed with `lostCwd` so
+    // its pane can say once where it was.
+    log('warn', `[recovery] ${session.id ?? 'session'}: stored cwd ${JSON.stringify(session.cwd)} no longer exists; starting in ${cwd}`);
+    if (session.id) recoveredLostCwd.set(session.id, session.cwd);
   }
   return cwd;
 }
@@ -3709,7 +3718,7 @@ function registerRpcHandlers(
       // #3049 — `startPending`: a held user shell main starts with its
       // credentials (main's reconnect promotes it, never holds it). On the
       // reply only; the record never carries it, so it is never persisted.
-      const base = { ...s, env: stripCredentialValues(s.env), ...(sessionManager.isStartPending(s.id) ? { startPending: true as const } : {}) };
+      const base = { ...s, env: stripCredentialValues(s.env), ...(sessionManager.isStartPending(s.id) ? { startPending: true as const } : {}), ...(recoveredLostCwd.has(s.id) ? { lostCwd: recoveredLostCwd.get(s.id) } : {}) };
       // Capture the durable meta binding before stripping it — reused below to
       // surface a guard-passed binding for LIVE agent panes too, so the per-pane
       // resume affordance (Inspect/pane-header UUID + 복구) works ANY time, not
