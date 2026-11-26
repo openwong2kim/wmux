@@ -35,6 +35,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { keptCopiesOf } from './quarantine';
 
 /**
  * Canonical backup-slot suffixes, ordered from newest to oldest.
@@ -50,12 +51,26 @@ export const BACKUP_SUFFIXES = ['.bak', '.bak.1', '.bak.2', '.bak.3'] as const;
 export type BackupSuffix = (typeof BACKUP_SUFFIXES)[number];
 
 /**
- * True when the primary or any backup slot exists: the files a sync read walks.
- * Callers check this before the read to tell "nothing on disk" (first boot)
- * from "on disk but unreadable" when the read returns null (#3247).
+ * True when the primary or any backup slot is on disk, or quarantine kept a
+ * copy of the primary. Callers check this before a sync read to tell "nothing
+ * on disk" (first boot) from "on disk but unreadable" when the read returns
+ * null (#3247). Kept copies count because an earlier read in the same boot can
+ * quarantine an invalid primary, which would otherwise look missing to every
+ * later read. A slot whose stat fails for any reason other than absence
+ * (EACCES, EBUSY, ...) counts as present: its contents are unknown, not gone.
  */
 export function stateSlotsOnDisk(primary: string): boolean {
-  return [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`)].some((p) => fs.existsSync(p));
+  const present = (p: string): boolean => {
+    try {
+      fs.lstatSync(p);
+      return true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return code !== 'ENOENT' && code !== 'ENOTDIR';
+    }
+  };
+  return [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`)].some(present)
+    || keptCopiesOf(primary).length > 0;
 }
 
 // ── Internal helpers ────────────────────────────────────────────────

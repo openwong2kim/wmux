@@ -1066,6 +1066,15 @@ describe('loadWithStatus', () => {
     expect(writer.loadWithStatus().status).toBe('unreadable');
   });
 
+  it('still reports unreadable after an earlier load in the same boot quarantined the primary', () => {
+    // acquireLock() reads sessions.json with its own one-shot writer before
+    // recovery; that read moves an invalid primary into corrupted/.
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, sessions: 'nope' }));
+    new StateWriter(tmpDir).load();
+    expect(fs.existsSync(file())).toBe(false);
+    expect(writer.loadWithStatus().status).toBe('unreadable');
+  });
+
   it('reports loaded when a bad primary falls back to a good backup', () => {
     fs.writeFileSync(file(), '{ not json');
     fs.writeFileSync(`${file()}.bak`, JSON.stringify(makeState([makeSession()])));
