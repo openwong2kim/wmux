@@ -1037,6 +1037,10 @@ struct SavedCursor {
     /// A narrower resize clamped Alacritty's saved column on the alternate
     /// screen while xterm's, in its emptied buffer, kept it (resize).
     unplaceable: bool,
+    /// A resize since the save left the main screen's history at its cap:
+    /// xterm's trims there move its saved row by rules the snapshot payload's
+    /// own save does not follow, so the payload carries none (#3518).
+    trimmed: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -1390,6 +1394,7 @@ impl XtermFeed {
             origin: self.origin,
             history: if screen == 0 { history() as i64 } else { 0 },
             unplaceable: false,
+            trimmed: false,
         };
     }
 
@@ -1970,6 +1975,42 @@ fn narrowed_saved_history(grid: &Grid<Cell>, history: i64, line_before: i64) -> 
     let line = i64::from(grid.saved_cursor.point.line.0);
     let bottom = grid.history_size() as i64 + grid.screen_lines() as i64 - 1;
     (history + line_before + grid.narrowing_added as i64 - line).min(bottom - line)
+}
+
+/// xterm's saved cursor on the shown main screen as a screen point, for the
+/// payload to save (native_serialize::serialize, #3518): xterm moves even a
+/// cursor never saved with a narrowing. Only a save that holds what a default
+/// one holds (no rendition, link, charset, DECOM or DECAWM change), which is
+/// also what a replayed payload's own save holds, so a snapshot of a terminal
+/// restored from one carries it again. None on the top-left cell (a replay's
+/// default), off the screen, or once a resize trimmed at the history cap
+/// (`SavedCursor::trimmed`): the payload then keeps no save, as before.
+fn default_saved_main(term: &Term<VoidListener>, saved: &SavedCursor) -> Option<Point> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return None;
+    }
+    let grid = term.grid();
+    let cursor = &grid.saved_cursor;
+    let template = &cursor.template;
+    let blank = Cell::default();
+    if saved.trimmed {
+        return None;
+    }
+    let default = !saved.saved
+        || (saved.dec_slots == [false; 4]
+            && !saved.origin
+            && !saved.no_wraparound
+            && cursor.charsets == Default::default()
+            && cursor.active_charset == CharsetIndex::G0
+            && template.fg == blank.fg
+            && template.bg == blank.bg
+            && template.flags.is_empty()
+            && template.hyperlink().is_none()
+            && template.underline_color().is_none());
+    let row = saved.history + i64::from(cursor.point.line.0) - grid.history_size() as i64;
+    let column = cursor.point.column;
+    (default && (0..grid.screen_lines() as i64).contains(&row) && (row, column.0) != (0, 0))
+        .then(|| Point::new(Line(row as i32), column))
 }
 
 /// The alternate screen's grid, whichever screen is shown.
@@ -2615,6 +2656,9 @@ impl NativeTerminal {
             } else {
                 self.feed.saved[0].history + grid.history_size() as i64 - before
             };
+            if grid.history_size() >= self.scrollback as usize {
+                self.feed.saved[0].trimmed = true;
+            }
             // feed_xterm checks the same after a chunk, where the chunk's own
             // ED 3 could hide a resize's trim.
             if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
@@ -2738,7 +2782,11 @@ impl NativeTerminal {
                     return Err(CallError::reason("margins"));
                 }
                 let tail = self.feed.pending_tail()?;
-                let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
+                let mut result = crate::native_serialize::serialize(
+                    term,
+                    !self.feed.shifted,
+                    default_saved_main(term, &self.feed.saved[0]),
+                )?;
                 // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
                 // `?25l`) and the tail, so neither grows the payload infallibly.
                 fallible::try_reserve_str(
@@ -5084,6 +5132,39 @@ mod alloc_failure_tests {
     }
 
     #[test]
+    fn a_default_saved_row_a_narrowing_moved_survives_a_restore_and_a_snapshot() {
+        // xterm moves a cursor never saved down by the row a narrowing adds
+        // above it (#3518). The payload saves it there, and so does the
+        // payload of a terminal restored from that one (its save is a
+        // default one).
+        let save: &[u8] = b"\x1b[2;1H\x1b7";
+        let has = |payload: &[u8], part: &[u8]| payload.windows(part.len()).any(|w| w == part);
+        let mut live = NativeTerminal::create(20, 4, 100).unwrap();
+        live.feed_xterm_bytes(b"aaaaaaaaaaaaaaa\r\nb", 100).unwrap();
+        live.resize_grid(10, 4).unwrap();
+        let first = live.ansi_snapshot_bytes(None).unwrap().to_vec();
+        assert!(has(&first, save), "{}", String::from_utf8_lossy(&first));
+        let mut restored = NativeTerminal::create(10, 4, 100).unwrap();
+        restored.feed_xterm_bytes(&first, 100).unwrap();
+        let second = restored.ansi_snapshot_bytes(None).unwrap().to_vec();
+        assert!(has(&second, save), "{}", String::from_utf8_lossy(&second));
+        let mut again = NativeTerminal::create(10, 4, 100).unwrap();
+        again.feed_xterm_bytes(&second, 100).unwrap();
+        for terminal in [&mut live, &mut again] {
+            terminal.feed_xterm_bytes(b"\x1b[?1049lX", 100).unwrap();
+        }
+        let shown = text(&mut live);
+        assert!(shown[1].starts_with('X'), "{shown:?}");
+        assert_eq!(text(&mut again), shown);
+        // Not narrowed, the saved cursor is the top-left cell: no save.
+        let mut plain = terminal();
+        plain
+            .feed_xterm_bytes(b"aaaaaaaaaaaaaaa\r\nb", 100)
+            .unwrap();
+        assert!(!has(&plain.ansi_snapshot_bytes(None).unwrap(), b"\x1b7"));
+    }
+
+    #[test]
     fn a_refused_pending_tail_is_an_error_and_the_next_snapshot_ships_it() {
         let mut terminal = terminal();
         terminal.feed_xterm_bytes(b"ab\x1b]0;tit", 100).unwrap();
@@ -5576,7 +5657,7 @@ mod parser_pool_tests {
                 .as_bytes(),
         );
         parser.stop_sync(&mut term);
-        crate::native_serialize::serialize(&term, true)
+        crate::native_serialize::serialize(&term, true, None)
             .ok()
             .unwrap()
     }
