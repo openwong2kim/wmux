@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useT } from '../../hooks/useT';
 import { renderBrainMarkdownWhole } from '../shared/BrainMarkdown';
 import { setEditorDirty } from './dirtyEditors';
+import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
 
 interface EditorPanelProps {
   filePath: string;
@@ -42,7 +44,11 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // The Edit-mode scratch copy. It lives in memory for the tab's lifetime and
+  // survives Edit -> View -> Edit; nothing writes it to disk (see below).
   const [editContent, setEditContent] = useState('');
+  // Reload asked while the scratch copy differs from the file.
+  const [confirmReload, setConfirmReload] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // The marked line (1-based) from a `path:line` link. It stays until the user
   // clicks the text, edits, or leaves the tab.
@@ -54,16 +60,18 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
   const isMarkdown = isMarkdownPath(filePath);
   // null when the file is not markdown or is too long for the renderer's
   // block budget: View then shows the raw text rather than a cut document.
+  // Scratch edits are never saved, so closing the tab with a changed buffer
+  // loses them: tell the close-tab confirm, in View mode as much as in Edit.
+  const dirty = content !== null && editContent !== content;
+  // View shows the scratch copy, so what was typed is what is read.
+  const viewText = content === null ? null : editContent;
   const markdownView = useMemo(
-    () => (isMarkdown && !forceSource && content !== null
-      ? renderBrainMarkdownWhole(content, { links: true, githubHtml: true, richCode: true })
+    () => (isMarkdown && !forceSource && viewText !== null
+      ? renderBrainMarkdownWhole(viewText, { links: true, githubHtml: true, richCode: true })
       : null),
-    [isMarkdown, forceSource, content],
+    [isMarkdown, forceSource, viewText],
   );
   const bodyRef = useRef<HTMLDivElement>(null);
-  // Scratch edits are never saved, so closing the tab with a changed buffer
-  // loses them: tell the close-tab confirm.
-  const dirty = editing && content !== null && editContent !== content;
   useEffect(() => {
     setEditorDirty(surfaceId, dirty);
     return () => setEditorDirty(surfaceId, false);
@@ -113,11 +121,11 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
   // Rows for the raw view, built only while a line is marked. Each row keeps
   // its trailing newline so the pre's text content is the file unchanged.
   const rawRows = useMemo(() => {
-    if (markedLine === null || content === null) return null;
-    const rows = content.split('\n');
+    if (markedLine === null || viewText === null) return null;
+    const rows = viewText.split('\n');
     const target = Math.min(Math.max(markedLine, 1), rows.length);
     return { rows, target };
-  }, [markedLine, content]);
+  }, [markedLine, viewText]);
 
   const handleToggleEdit = useCallback(() => {
     if (editing) {
@@ -125,15 +133,16 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
       setEditing(false);
     } else {
       // Switch to edit mode
+      // Keep the scratch copy as it was left: re-entering Edit must not reset it.
       setMarkedLine(null);
-      setEditContent(content || '');
       setEditing(true);
       // Focus textarea after render
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [editing, content]);
+  }, [editing]);
 
-  const handleReload = useCallback(() => {
+  const reloadNow = useCallback(() => {
+    setConfirmReload(false);
     setLoading(true);
     setError(null);
     readFileContent(filePath).then((result) => {
@@ -147,6 +156,13 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
       setLoading(false);
     });
   }, [filePath]);
+
+  // Reloading replaces the scratch copy with the file: ask first when that
+  // would drop edits.
+  const handleReload = useCallback(() => {
+    if (dirty) setConfirmReload(true);
+    else reloadNow();
+  }, [dirty, reloadNow]);
 
   return (
     <div
@@ -163,6 +179,16 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
           {shortenPath(filePath)}
         </span>
         <div className="flex-1" />
+        {(editing || dirty) && (
+          <span
+            data-testid="editor-scratch-chip"
+            className="px-1.5 py-0.5 text-[10px] text-[var(--text-sub)] whitespace-nowrap"
+            style={{ background: 'var(--selection)', borderRadius: 'var(--chip-radius)' }}
+            title={t('editor.scratchTitle')}
+          >
+            {dirty ? t('editor.scratchUnsaved') : t('editor.scratch')}
+          </span>
+        )}
         <button
           className="px-2 py-0.5 rounded-[5px] text-[10px] transition-colors border bg-[color-mix(in_srgb,var(--bg-surface)_72%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] text-[var(--text-sub)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)] hover:border-[color-mix(in_srgb,var(--text-main)_16%,transparent)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.25)]"
           onClick={handleReload}
@@ -286,7 +312,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
                       </span>
                     );
                   })
-                : content}
+                : viewText}
             </pre>
           )
         )}
@@ -300,6 +326,19 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
           />
         )}
       </div>
+      {confirmReload && (
+        <Dialog onClose={() => setConfirmReload(false)} width={360} closeOnBackdrop data-testid="editor-reload-confirm">
+          <DialogHeader title={t('editor.reloadDiscardTitle')} description={t('editor.reloadDiscardBody')} />
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={() => setConfirmReload(false)} data-editor-keep-editing>
+              {t('editor.keepEditing')}
+            </Button>
+            <Button variant="danger" size="sm" onClick={reloadNow} data-editor-discard>
+              {t('editor.discardAndReload')}
+            </Button>
+          </DialogFooter>
+        </Dialog>
+      )}
     </div>
   );
 }

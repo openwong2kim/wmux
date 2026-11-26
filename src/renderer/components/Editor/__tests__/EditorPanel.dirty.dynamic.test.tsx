@@ -76,4 +76,46 @@ describe('EditorPanel dirty reporting', () => {
     act(() => root.render(null));
     expect(isEditorDirty('s1')).toBe(false);
   });
+
+  it('keeps the scratch text across Edit -> View -> Edit and shows it in View', async () => {
+    await open('hello');
+    const ta = await enterEditMode();
+    await type(ta, 'hello world');
+    const tabs = container.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    await act(async () => {
+      tabs[0].click();
+    });
+    expect(container.querySelector('pre')?.textContent).toBe('hello world');
+    expect(isEditorDirty('s1')).toBe(true);
+    expect(container.querySelector('[data-testid="editor-scratch-chip"]')).not.toBeNull();
+    const again = await enterEditMode();
+    expect(again.value).toBe('hello world');
+  });
+
+  it('asks before Reload drops scratch edits; Keep editing keeps them', async () => {
+    await open('hello');
+    const ta = await enterEditMode();
+    await type(ta, 'changed');
+    const api = (window as any).electronAPI.fs.readFile as ReturnType<typeof vi.fn>;
+    api.mockClear();
+    const reload = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Reload')!;
+    await act(async () => {
+      reload().click();
+    });
+    expect(api).not.toHaveBeenCalled();
+    const keep = document.querySelector<HTMLButtonElement>('[data-editor-keep-editing]')!;
+    await act(async () => {
+      keep.click();
+    });
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('changed');
+    await act(async () => {
+      reload().click();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-editor-discard]')!.click();
+    });
+    expect(api).toHaveBeenCalledTimes(1);
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('hello');
+    expect(isEditorDirty('s1')).toBe(false);
+  });
 });
