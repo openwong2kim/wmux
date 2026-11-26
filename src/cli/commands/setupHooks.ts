@@ -2282,6 +2282,7 @@ async function handleCompatAgentHooks(
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printAssetStatus('shared hooks bridge', outcome.bridge);
+      if (outcome.entry) printAssetStatus(`${flavour} entry point`, outcome.entry);
       console.log(outcome.nativeSummary);
       // Say so when an env var (COPILOT_HOME) chose the directory, so the
       // path is not mistaken for the default one.

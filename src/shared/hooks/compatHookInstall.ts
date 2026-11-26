@@ -253,9 +253,15 @@ export function tomlHookCommand(entryPath: string): string | null {
   return `node "${forward}"`;
 }
 
+/** wmux's command is exactly the form tomlHookCommand writes, for an entry
+ *  point of this basename at any path (an older home moves it). A user's own
+ *  command that merely names the file (`logger wmux-jcode-bridge.mjs`) is not. */
 function tomlOwned(flavourId: CompatHookFlavourId): (command: string) => boolean {
-  const basename = tomlHooksInstall(flavourId)?.entryBasename ?? '\0';
-  return (command) => command.includes(basename);
+  const basename = tomlHooksInstall(flavourId)?.entryBasename;
+  if (!basename) return () => false;
+  const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^node "[^"\\r\\n]*/${escaped}"$`);
+  return (command) => re.test(command);
 }
 
 function readOptionalText(file: string): { text: string | null } | { error: string } {
@@ -729,15 +735,26 @@ export interface CompatHookStatus {
    *  default under the home directory. Null when the flavour has no installer. */
   configDirSource: CompatHookConfigDirSource | null;
   config: CompatHookConfigState;
+  /** toml-hooks: the entry point copy beside the bridge. */
+  entry?: LifecycleAssetStatus;
 }
 
 export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookStatus {
   // Read once, never run: status must not spawn the binary.
   const native = paths.nativeHooks ? inspectLifecycleAsset(paths.nativeHooks) : null;
   const active = activeNativeHooksPath(paths.nativeHooks, native);
-  const { state, configPath } = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath, active);
+  const inspected = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath, active);
+  const { configPath } = inspected;
+  // The config's commands run the entry point copy: a missing or stale copy
+  // makes a written config stale too.
+  const entrySpec = tomlEntrySpec(flavourId, paths);
+  const entry = entrySpec ? inspectLifecycleAsset(entrySpec) : undefined;
+  const state = entry && entry.state !== 'current' && (inspected.state === 'current' || inspected.state === 'stale')
+    ? 'stale'
+    : inspected.state;
   return {
     flavour: flavourId,
+    ...(entry ? { entry } : {}),
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,

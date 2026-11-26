@@ -64,6 +64,23 @@ describe('jcode hook install', () => {
     expect(statusCompatHooks('jcode', paths).config).toBe('absent');
   });
 
+  it("leaves a user's own command that merely names the entry point", async () => {
+    fs.mkdirSync(path.dirname(configFile()), { recursive: true });
+    fs.writeFileSync(configFile(), '[hooks]\nturn_end = "logger wmux-jcode-bridge.mjs"\n');
+    await installCompatHooks('jcode', paths);
+    const cmd = tomlHookCommand(entry()) as string;
+    expect((parse(fs.readFileSync(configFile(), 'utf8')) as { hooks: Record<string, string[]> }).hooks.turn_end).toEqual(['logger wmux-jcode-bridge.mjs', cmd]);
+    removeCompatHooks('jcode', paths);
+    expect((parse(fs.readFileSync(configFile(), 'utf8')) as { hooks: Record<string, string[]> }).hooks).toEqual({ turn_end: ['logger wmux-jcode-bridge.mjs'] });
+  });
+
+  it('--status reads a missing entry point copy as stale', async () => {
+    await installCompatHooks('jcode', paths);
+    expect(statusCompatHooks('jcode', paths)).toMatchObject({ config: 'current', entry: { state: 'current' } });
+    fs.unlinkSync(entry());
+    expect(statusCompatHooks('jcode', paths)).toMatchObject({ config: 'stale', entry: { state: 'missing' } });
+  });
+
   it('writes nothing and returns the lines when the file cannot be edited safely', async () => {
     fs.mkdirSync(path.dirname(configFile()), { recursive: true });
     const original = '[hooks]\nturn_end = [\n  "a", # keep this\n]\n';

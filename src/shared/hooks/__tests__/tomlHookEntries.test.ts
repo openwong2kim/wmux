@@ -39,6 +39,10 @@ describe('planTomlHooksInstall', () => {
     expect(planTomlHooksInstall(text, KEYS, CMD, owned)).toEqual({ kind: 'edit', text: null });
   });
 
+  it('keeps a trailing comment after a value with characters outside the BMP', () => {
+    expect(edited('[hooks]\nturn_end = "😀😀" # keep\n')).toContain(`turn_end = ["😀😀", ${JSON.stringify(CMD)}] # keep`);
+  });
+
   it('keeps CRLF line endings', () => {
     expect(edited('[hooks]\r\nturn_end = "x"\r\n')).toBe(`[hooks]\r\nsession_start = [${JSON.stringify(CMD)}]\r\nturn_end = ["x", ${JSON.stringify(CMD)}]\r\n`);
   });
@@ -56,6 +60,11 @@ describe('planTomlHooksInstall', () => {
 });
 
 describe('planTomlHooksRemove and inspectTomlHooks', () => {
+  it('reports stale when the wanted command sits beside an older wmux one', () => {
+    const both = `[hooks]\nsession_start = [${JSON.stringify(CMD)}]\nturn_end = [${JSON.stringify(CMD)}, "node \\"/old/wmux-jcode-bridge.mjs\\""]\n`;
+    expect(inspectTomlHooks(both, KEYS, CMD, owned)).toEqual({ session_start: 'current', turn_end: 'stale' });
+  });
+
   it("removes only wmux's commands; a key left empty goes", () => {
     const installed = edited('[hooks]\nturn_end = "~/bin/notify" # ping me\n');
     expect(inspectTomlHooks(installed, KEYS, CMD, owned)).toEqual({ session_start: 'current', turn_end: 'current' });

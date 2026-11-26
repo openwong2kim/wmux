@@ -72,7 +72,10 @@ export function inspectTomlHooks(
   for (const key of keys) {
     const commands = commandsOf(hooks?.[key]);
     if (commands === null) return null;
-    out[key] = commands.includes(wanted) ? 'current' : commands.some(isOwned) ? 'stale' : 'absent';
+    // Current only when wmux's command is the one wmux entry: an older one
+    // beside it still runs (a duplicate signal per event).
+    const ownedCount = commands.filter(isOwned).length;
+    out[key] = commands.includes(wanted) && ownedCount === 1 ? 'current' : ownedCount > 0 || commands.includes(wanted) ? 'stale' : 'absent';
   }
   return out;
 }
@@ -184,7 +187,9 @@ function normalise(value: unknown): unknown {
  * `expected` (a multi-line array starts here and goes on).
  */
 function trailingComment(rest: string, expected: unknown): string | null {
-  const candidates = [rest.length, ...[...rest].flatMap((ch, i) => (ch === '#' ? [i] : []))];
+  // UTF-16 offsets, as slice() takes them (a spread would count code points).
+  const candidates = [rest.length];
+  for (let i = rest.indexOf('#'); i >= 0; i = rest.indexOf('#', i + 1)) candidates.push(i);
   for (const cut of candidates.sort((a, b) => a - b)) {
     const parsed = tryParse(`v = ${rest.slice(0, cut)}`);
     if (parsed && deepEqual(parsed.v, expected)) {
