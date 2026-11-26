@@ -77,9 +77,11 @@ describe('copyTranscript', () => {
 });
 
 describe('relaunchLine', () => {
-  it('pins the account on the agent only, in the session\'s folder, for both shells', () => {
+  it('sets the account in the shell itself, then resumes in the session\'s folder, for both shells', () => {
     expect(relaunchLine(binding({ permissionMode: 'bypassPermissions' }), "/acct/it's", 'posix'))
-      .toBe(`cd -- '/work/repo' && CLAUDE_CONFIG_DIR='/acct/it'\\''s' claude --resume ${SID} --dangerously-skip-permissions\r`);
+      .toBe(`export CLAUDE_CONFIG_DIR='/acct/it'\\''s'; cd -- '/work/repo' && claude --resume ${SID} --dangerously-skip-permissions\r`);
+    // A value that would end the typed line early is never typed.
+    expect(relaunchLine(binding(), '/acct/a\nb', 'posix')).toBeNull();
     expect(relaunchLine(binding({ cwd: 'C:\\work\\repo' }), 'C:\\Users\\me\\.wmux\\accounts\\claude-1', 'pwsh'))
       .toBe(`if (Set-Location -LiteralPath 'C:\\work\\repo' -PassThru -ErrorAction SilentlyContinue) { $env:CLAUDE_CONFIG_DIR = 'C:\\Users\\me\\.wmux\\accounts\\claude-1'; claude --resume ${SID} }\r`);
   });
@@ -133,7 +135,8 @@ describe('continueOnAccount', () => {
     // A hook rebound the pane to another conversation while Claude stopped: nothing is copied or typed.
     let reads = 0;
     const rebound = deps({ pane: () => ({ resumeBinding: reads++ === 0 ? binding() : binding({ sessionId: '1b5c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d' }) }) });
-    expect(await continueOnAccount(rebound, 'p1', accountB)).toEqual({ ok: false, code: 'unknown_session' });
+    // Claude did stop: its own code, a failure, never the refusal 'unknown_session' (nothing stopped).
+    expect(await continueOnAccount(rebound, 'p1', accountB)).toEqual({ ok: false, code: 'session_changed' });
     expect(rebound.calls).toEqual(['stop']);
   });
 

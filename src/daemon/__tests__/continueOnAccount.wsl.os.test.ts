@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { continueOnAccount, planWslTranscriptCopy, wslAccountEnv, type ContinueOnAccountDeps, type ContinueOnAccountWslDeps } from '../continueOnAccount';
 import { keepOwnWslTranscriptPath } from '../hooks/transcriptPathGuard';
 import { parseWslAccountCopy, runWslAccountCopy, wslAccountCopyArgs } from '../wslAccountCopy';
-import { wslAccountHomeKey } from '../../shared/wslAccountHome';
+import { wslAccountHomeKey, wslAccountLinuxHome } from '../../shared/wslAccountHome';
 import type { ResumeBinding } from '../../shared/agentResume';
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { setWslAccountKeys } from '../../shared/wslAccountMark';
@@ -86,7 +86,20 @@ describe('continueOnAccount in a WSL pane', () => {
     const d = deps();
     expect(await continueOnAccount(d, 'p1', ACCOUNT_B)).toEqual({ ok: true, sessionId: SID, transcriptPath: COPY });
     expect(d.calls.slice(0, 4)).toEqual(['ready', 'stop', `copy:${SOURCE}>${COPY}`, `rebind:${ACCOUNT_B}:${COPY}:-`]);
-    expect(d.calls[4]).toBe(`write:cd -- '/home/me/repo' && CLAUDE_CONFIG_DIR='${HOME_B}' claude --resume ${SID}\r`);
+    // Exported in the shell: a claude typed after this one exits runs on B too.
+    const key = wslAccountHomeKey(ACCOUNT_B);
+    expect(d.calls[4]).toBe(`write:export CLAUDE_CONFIG_DIR='${HOME_B}' WMUX_WSL_ACCOUNT_CLAUDE='${key}'; cd -- '/home/me/repo' && claude --resume ${SID}\r`);
+  });
+
+  it('leaves the shell on the home the pane\'s record names', async () => {
+    const d = deps();
+    await continueOnAccount(d, 'p1', ACCOUNT_B);
+    const typed = d.calls.find((c) => c.startsWith('write:')) ?? '';
+    const exported = (name: string) => new RegExp(`${name}='([^']*)'`).exec(typed)?.[1];
+    // What the daemon records for the pane (rebind → wslAccountEnv), and the home its shell derives from it.
+    const record = wslAccountEnv({}, ACCOUNT_B, TARGET);
+    expect(exported('CLAUDE_CONFIG_DIR')).toBe(wslAccountLinuxHome(record, 'claude', TARGET.user));
+    expect(exported('WMUX_WSL_ACCOUNT_CLAUDE')).toBe(wslAccountHomeKey(record.CLAUDE_CONFIG_DIR));
   });
 
   it('types nothing when the copy went to another home than the line names', async () => {
@@ -159,7 +172,7 @@ describe('continueOnAccount in a WSL pane', () => {
     let t = 0;
     const d = deps({ promptRevision: () => null, now: () => (t += 1_000) });
     const res = await continueOnAccount(d, 'p1', ACCOUNT_B);
-    expect(res).toEqual({ ok: false, code: 'shell_busy', resumeCommand: `cd -- '/home/me/repo' && CLAUDE_CONFIG_DIR='${HOME_B}' claude --resume ${SID}` });
+    expect(res).toEqual({ ok: false, code: 'shell_busy', resumeCommand: `export CLAUDE_CONFIG_DIR='${HOME_B}' WMUX_WSL_ACCOUNT_CLAUDE='${wslAccountHomeKey(ACCOUNT_B)}'; cd -- '/home/me/repo' && claude --resume ${SID}` });
     expect(d.calls.some((c) => c.startsWith('rebind') || c.startsWith('write'))).toBe(false);
   });
 });

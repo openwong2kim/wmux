@@ -63,7 +63,7 @@ export const NOT_SIGNED_IN = 'not_signed_in';
  *  not known here) is a failure. */
 const SKIP_CODES: ReadonlySet<string> = new Set([
   'turn_open', 'busy', 'folder_trust', 'not_claude', 'unsupported', 'invalid_account',
-  'unavailable', 'still_running', 'no_session', NOT_SIGNED_IN,
+  'unavailable', 'still_running', 'no_session', 'unknown_session', NOT_SIGNED_IN,
 ]);
 
 /** A refusal that leaves the pane as it was: "skipped", not "failed". */
