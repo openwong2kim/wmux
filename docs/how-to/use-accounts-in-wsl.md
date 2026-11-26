@@ -27,8 +27,15 @@ folder inside the distro, and you sign in to it there once.
   stops Claude, copies the conversation into that account's folder in the
   same distro (created if needed, as your pane's user), and resumes it there
   in the same pane. If that account has no sign-in in this distro yet, Claude
-  asks you to sign in. An account that signs in with a stored token still
-  cannot be continued in a WSL pane.
+  asks you to sign in. When that account (or your pane) signs in with a
+  stored token, the conversation opens in a new WSL pane beside this one
+  instead, in the same distro and as the same Linux user, and this pane is
+  left as it was.
+- **Stored token.** A pane on an account that signs in with a stored Claude
+  OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) gets the token in the distro too, and its WSL folder is marked as past
+  Claude's first-run setup, so Claude uses the token instead of asking you to
+  sign in. If that folder already has a `.claude.json` from an earlier Claude
+  run, wmux leaves it alone, and Claude may ask once.
 - **Shared settings.** If the account was created with sharing on, its new WSL
   folder links the distro's own skills, commands, agents and plugins (Codex:
   prompts) and copies its `settings.json` and `CLAUDE.md` (Codex: `config.toml`

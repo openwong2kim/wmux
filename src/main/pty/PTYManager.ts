@@ -49,7 +49,13 @@ export interface PTYInstance {
    * (CLI tools, tests). Used only for EventBus scoping; absence skips emission.
    */
   workspaceId?: string;
+  /** A WSL pane: its distro and user, and the env that decides its account
+   *  home (wslAccountLinuxHome), for its usage samples (usage.rpc.ts). */
+  wslAccount?: { target: WslTarget; env: Record<string, string> };
 }
+
+/** The env names a WSL pane's account home is computed from. */
+const WSL_ACCOUNT_HOME_ENV = ['CLAUDE_CONFIG_DIR', 'WMUX_WSL_ACCOUNT_KEYS', 'WMUX_DATA_SUFFIX'] as const;
 
 const MAX_PTY_INSTANCES = 20;
 
@@ -64,6 +70,7 @@ interface PreparedSpawn {
   cols: number;
   rows: number;
   workspaceId?: string;
+  wslAccount?: PTYInstance['wslAccount'];
 }
 
 export class PTYManager {
@@ -417,7 +424,10 @@ export class PTYManager {
       : this.buildHookInjection(shellType, env, shell);
     const spawnArgs = wsl ? hookInjection.args : [...(options?.shellArgs ?? []), ...hookInjection.args];
 
-    return { id, shell, cwd, hostCwd, spawnArgs, env: hookInjection.env, cols: options?.cols || 80, rows: options?.rows || 24, workspaceId: options?.workspaceId };
+    const wslAccount = wsl
+      ? { target: wsl.target, env: Object.fromEntries(WSL_ACCOUNT_HOME_ENV.flatMap((k) => (env[k] !== undefined ? [[k, env[k]]] : []))) }
+      : undefined;
+    return { id, shell, cwd, hostCwd, spawnArgs, env: hookInjection.env, cols: options?.cols || 80, rows: options?.rows || 24, workspaceId: options?.workspaceId, ...(wslAccount ? { wslAccount } : {}) };
   }
 
   /**
@@ -468,13 +478,14 @@ export class PTYManager {
 
   /** Registers a pane around a PTY whose pid is known. */
   private registerSpawned(prepared: PreparedSpawn, ptyProcess: IPty): PTYInstance {
-    const { id, shell, cwd, workspaceId } = prepared;
+    const { id, shell, cwd, workspaceId, wslAccount } = prepared;
     const instance: PTYInstance = {
       id,
       process: ptyProcess,
       shell,
       cwd,
       ...(workspaceId ? { workspaceId } : {}),
+      ...(wslAccount ? { wslAccount } : {}),
     };
     this.instances.set(id, instance);
     // Mirrored into the shared registry so the clipboard handler can ask one

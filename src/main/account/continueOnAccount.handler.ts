@@ -22,9 +22,15 @@ import { agentRow } from '../../shared/agentIdentity';
 import { CHATV2_PROVIDER_SESSION_ID } from '../../shared/chatv2/ipc';
 import { permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
 import { notePoolPaneMoved } from '../worktask/fanoutAccountPool';
+import { isLinuxCwd } from '../../shared/wslTarget';
+
+/** The pane that resumes a copied conversation on a token account. `wslFrom`:
+ *  the source is a WSL pane, so this one opens in its distro as its user
+ *  (pty.handler resolves both from that live pane), at a Linux `cwd`. */
+export interface ContinueNewPane { accountId: string; command: string; cwd: string; wslFrom?: string }
 
 export type ContinuePaneResult =
-  | { ok: true; newPane?: { accountId: string; command: string; cwd: string } }
+  | { ok: true; newPane?: ContinueNewPane }
   /** `resumeCommand`: Claude stopped and the copy exists, but it was not
    *  relaunched; the line that resumes the copy in the source pane's shell. */
   | { ok: false; code: string; resumeCommand?: string };
@@ -42,7 +48,7 @@ export interface ContinuePaneDeps {
   sourceSignedIn: (ptyId: string, workspaceId: string | undefined) => boolean;
   dirOk: (dir: string) => boolean;
   connected: () => boolean;
-  rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string }) => Promise<unknown>;
+  rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string; wslNewPane?: true }) => Promise<unknown>;
   /** The daemon moved the pane to the account in place (a fan-out task's
    *  launch record follows: fanoutAccountPool.ts notePoolPaneMoved). */
   movedInPlace?: (ptyId: string, accountId: string) => void;
@@ -70,8 +76,10 @@ export async function continuePane(
     return { ok: false, code: 'unavailable' };
   }
   try {
-    const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount', { sessionId: ptyId, configDir: account.configDir }) as
-      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown } | null;
+    // `wslNewPane`: this main opens a WSL pane's copy as that pane runs (ContinueNewPane.wslFrom).
+    const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount',
+      newPane ? { sessionId: ptyId, configDir: account.configDir, wslNewPane: true } : { sessionId: ptyId, configDir: account.configDir }) as
+      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown; wsl?: unknown } | null;
     if (res?.ok !== true) {
       const code = typeof res?.code === 'string' ? res.code : 'unknown';
       const resume = res?.resumeCommand;
@@ -87,9 +95,11 @@ export async function continuePane(
     if (typeof res.sessionId !== 'string' || !CHATV2_PROVIDER_SESSION_ID.test(res.sessionId) || typeof res.cwd !== 'string' || !res.cwd) {
       return { ok: false, code: 'unknown_session' };
     }
+    const wsl = res.wsl === true;
+    if (wsl && (!isLinuxCwd(res.cwd) || !res.cwd.startsWith('/'))) return { ok: false, code: 'unknown_session' };
     const flag = typeof res.permissionMode === 'string' ? permissionFlagFor(res.permissionMode as PermissionMode) : '';
     const command = ['claude', '--resume', res.sessionId, flag].filter(Boolean).join(' ');
-    return { ok: true, newPane: { accountId: account.id, command, cwd: res.cwd } };
+    return { ok: true, newPane: { accountId: account.id, command, cwd: res.cwd, ...(wsl ? { wslFrom: ptyId } : {}) } };
   } catch (err) {
     // A timeout is not a refusal: the daemon may still finish the move. A
     // daemon without the copy method answers Unknown method: nothing moved.

@@ -41,6 +41,10 @@ export class UsageTrailStore {
     return this.trail.read(key, sinceMs, untilMs);
   }
 
+  keys(): string[] {
+    return this.trail.keys();
+  }
+
   /** Write any pending change now (the debounce timer and the quit paths). */
   flushSync(): void {
     if (this.timer) {

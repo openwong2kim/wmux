@@ -22,11 +22,27 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
     // Both paths run stageCreate, whose first stage is the quota; the tool
     // level is applied to its result.
     // A fan-out pool worker's pick is pinned (no rotation), so its stage skips the quota.
-    expect(source.match(/staged = await stageCreate\((options, botWorker, gateway\?\.launch, poolPinned|pool\.options, botWorker, undefined, pool\.pinned)\);/g) ?? []).toHaveLength(2);
+    expect(source.match(/staged = await stageCreate\((options, botWorker, gateway\?\.launch, poolPinned, createPlace|pool\.options, botWorker, undefined, pool\.pinned, localPlace)\);/g) ?? []).toHaveLength(2);
     const stage = source.slice(source.indexOf('async function stageCreate('));
-    const quota = 'let staged = poolPinned ? options : await withAccountQuota(options);';
+    const quota = 'let staged = poolPinned ? options : await withAccountQuota(options, { wsl, place: place ?? launchPlace(wsl, requestedWslDistro(options), undefined) });';
     expect(stage.indexOf(quota)).toBeGreaterThan(-1);
     expect(stage.indexOf(quota)).toBeLessThan(stage.indexOf('staged = withWmuxTools(staged);'));
     expect(source).not.toMatch(/withAccountQuota\(withWmuxTools\(/);
+  });
+
+  it('resolves where a WSL launch runs before the gate, from the one session lookup', () => {
+    const daemon = source.slice(source.indexOf('ipcMain.handle(IPC.PTY_CREATE'));
+    const lookup = daemon.indexOf("recoverySessions = (recoveryId");
+    expect(lookup).toBeGreaterThan(-1);
+    expect(lookup).toBeLessThan(daemon.indexOf('staged = await stageCreate('));
+    expect(daemon.indexOf('const knownTarget = ')).toBeLessThan(daemon.indexOf('staged = await stageCreate('));
+  });
+
+  it('spawns a plain WSL pane a quota switch moved at the place whose home it evaluated, and learns no start place from it', () => {
+    const daemon = source.slice(source.indexOf('ipcMain.handle(IPC.PTY_CREATE'));
+    const target = daemon.indexOf('const switchTarget = namedAccount === undefined && options?.accountId !== undefined');
+    expect(target).toBeGreaterThan(daemon.indexOf('options = staged.options;'));
+    expect(daemon).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget ?? poolTarget ?? switchTarget,');
+    expect(daemon).toContain('!poolTarget && !switchTarget && validWslTarget(createdTarget)');
   });
 });

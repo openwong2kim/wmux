@@ -119,7 +119,10 @@ import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
-import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
+import { registerUsageRpc, registerUsageTrailRpc, type WslUsagePane } from './pipe/handlers/usage.rpc';
+import { getPtyShell } from './pty/ptyShellRegistry';
+import { getWslAccountState, seedWslAccountState, wslStateKey } from './account/wslAccountState';
+import { isWslShell, validWslTarget } from '../shared/wslTarget';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
 import { registerFsRpc } from './pipe/handlers/fs.rpc';
 import { setToolRefusalSource } from './agents/toolRefusals';
@@ -1940,6 +1943,8 @@ function claudeAccountSnapshot(accountId: string): UsageSnapshot | null {
 const usageTrail = new UsageTrailStore(path.join(getWmuxDir(), 'usage-trail.json'));
 usagePoller.onStateChange((state) => usageTrail.record('default', state.snapshot));
 accountUsageService.onChange((entry) => usageTrail.record(entry.accountId, entry.snapshot));
+// A WSL account home's last reading from before this start (wslAccountState.ts).
+seedWslAccountState(getWslAccountState(), usageTrail);
 // A removed account's history is not served; it ages out of the file.
 registerFsRpc(rpcRouter);
 registerFsWriteRpc(rpcRouter);
@@ -1953,17 +1958,26 @@ registerPcEnvRpc(rpcRouter, { wmuxVersion: app.getVersion() });
 // Usage reserve: unattended starts wait while an account's 5h usage is in the
 // last 15%. Reads the usage held above; the daemon gets the holds for its
 // scheduled runs, and fan-outs ask it directly (fanout.rpc.ts).
+/** A reserve key's name for the owner: the account's, marked WSL for a WSL home's key. */
+function usageReserveAccountName(key: string): string {
+  const at = key.indexOf('@wsl:');
+  const id = at < 0 ? key : key.slice(0, at);
+  const name = getAccountStore().getAccount(id)?.name ?? id;
+  return at < 0 ? name : `${name} (WSL)`;
+}
 const usageReserve = new UsageReserve({
   wmuxDir: getWmuxDir(),
   snapshots: () => [
     ['default', usagePoller.getState().snapshot],
     ...accountUsageService.getAll().map((e): [string, typeof e.snapshot] => [e.accountId, e.snapshot]),
+    // A WSL account home's own reading, by its key: a pool worker there is held on it.
+    ...getWslAccountState().all().map(([key, e]): [string, typeof e.snapshot] => [key, e.snapshot]),
   ],
   accountOfWorkspace: (workspaceId) => getAccountStore().getBinding(workspaceId, 'claude') ?? 'default',
   push: (holds) => daemonClient?.setUsageReserveHolds(holds) ?? Promise.resolve(false),
   notify: (account, untilMs) => {
     const locale = getAutomationUiLocale();
-    const who = account === 'default' ? null : getAccountStore().getAccount(account)?.name ?? account;
+    const who = account === 'default' ? null : usageReserveAccountName(account);
     const text = usageReserveToastText(locale, who, formatResetClock(untilMs, Date.now(), locale));
     toastManager.showDirect(text, '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
   },
@@ -1978,12 +1992,14 @@ setFanoutAccountPoolHost({
   hookDriftIds: async (accounts) => accountsWithoutCurrentHooks(accounts, await primaryHookPaths()),
   isUnc: isUncPath,
   probeUsage: (accountId) => { void accountUsageService.maybeProbe(accountId); },
+  daemonSessions: async () => (daemonClient?.isConnected ? daemonClient.rpc('daemon.listSessions', {}) : null),
   notifyCallerFallback: () => {
     toastManager.showDirect(poolCallerFallbackToastText(getAutomationUiLocale()), '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
   },
 });
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());
+getWslAccountState().onChange(() => usageReserve.refresh());
 ipcMain.handle(IPC.USAGE_RESERVE_GET, () => ({ enabled: usageReserve.enabled() }));
 ipcMain.handle(IPC.USAGE_RESERVE_SET, async (_event, enabled: unknown) => {
   if (typeof enabled !== 'boolean') return { ok: false };
@@ -2023,6 +2039,30 @@ ipcMain.handle(NEW_PACKAGE_NOTE_IPC.SET, async (_event, enabled: unknown) => {
 // Where a commit made in a pane came from, as the daemon recorded it.
 registerCommitOriginRpc(rpcRouter, (sha) => daemonClient?.lookupCommitOrigin(sha) ?? Promise.resolve('unavailable'));
 
+// A WSL pane's distro, user and env for its usage samples, read from the
+// daemon and kept briefly: a statusline push has a short budget. A miss is
+// never kept, and a sample that no longer matches asks again (`fresh`).
+const WSL_USAGE_PANE_TTL_MS = 30_000;
+const wslUsagePanes = new Map<string, { atMs: number; pane: WslUsagePane }>();
+async function wslUsagePane(ptyId: string, fresh: boolean): Promise<WslUsagePane | null> {
+  const hit = wslUsagePanes.get(ptyId);
+  if (!fresh && hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
+  // Local PTY mode: main spawned the pane and kept what decides its home.
+  if (!daemonClient) return ptyManager.get(ptyId)?.wslAccount ?? null;
+  const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state?: string; wslTarget?: unknown; env?: Record<string, string> }>;
+  const now = Date.now();
+  for (const [id, entry] of wslUsagePanes) if (now - entry.atMs >= WSL_USAGE_PANE_TTL_MS) wslUsagePanes.delete(id);
+  // A live session only: a closed pane's samples are no one's.
+  const s = sessions.find((x) => x.id === ptyId && (x.state === 'attached' || x.state === 'detached'));
+  if (!s || !validWslTarget(s.wslTarget) || !s.env) {
+    wslUsagePanes.delete(ptyId);
+    return null;
+  }
+  const pane = { target: s.wslTarget, env: s.env };
+  wslUsagePanes.set(ptyId, { atMs: now, pane });
+  return pane;
+}
+
 // Live `rate_limits` pushed by the wmux statusline script. The account is the
 // one the pane actually runs on (its CLAUDE_CONFIG_DIR), not the workspace's
 // current binding, so this path is not subject to the routing limitation noted
@@ -2031,6 +2071,24 @@ registerUsageRpc(rpcRouter, {
   listClaudeAccounts: () => getAccountStore().listAccounts()
     .filter((a) => a.vendor === 'claude')
     .map((a) => ({ id: a.id, configDir: a.configDir })),
+  // A WSL pane's sample names its account home in the distro: resolved against
+  // that pane's own env and user, as the daemon holds them.
+  isWslPane: async (ptyId, configDir) => {
+    const shell = getPtyShell(ptyId);
+    if (shell !== undefined) return isWslShell(shell);
+    if (process.platform !== 'win32') return false;
+    if (configDir?.startsWith('/')) return true;
+    // Not registered yet (a pane kept over a restart, before its reattach):
+    // the daemon's record says. Unknown, it takes the WSL path, which drops
+    // a sample it cannot place rather than read it as the Windows default.
+    try { return (await wslUsagePane(ptyId, true)) !== null; } catch { return true; }
+  },
+  wslPane: (ptyId, fresh) => wslUsagePane(ptyId, fresh),
+  noteWslAccountSample: (accountId, place, update) => {
+    const snapshot = getWslAccountState().noteSample(accountId, place, update);
+    const key = wslStateKey(accountId, place);
+    if (snapshot && key) usageTrail.record(key, snapshot);
+  },
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   // A live push is recorded and read by the reserve at ingest: with the
   // meter off the poller stores it without telling its listeners.

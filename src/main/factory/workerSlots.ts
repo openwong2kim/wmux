@@ -43,6 +43,8 @@ import { splitModelEnvMarker } from '../../shared/workerLaunch';
 import { poolRelaunchRefusal } from '../worktask/fanoutAccountPool';
 import { namesClaude } from '../../shared/botWorkerGuard';
 import { namesCodex } from '../../shared/codexWorkerGuard';
+import { validWslTarget } from '../../shared/wslTarget';
+import type { WslPlace } from '../account/wslAccountState';
 
 export const WORKER_SLOTS_FILENAME = 'worker-slots.json';
 export const WORKER_SLOTS_VERSION = 1 as const;
@@ -83,6 +85,12 @@ export interface TaskLaunch {
    *  create runs it there, whatever the renderer names. Absent with the pool
    *  off, for a non-Claude launch, and on any older record. */
   accountId?: string;
+  /** Where `accountId` runs when the pool picked it for a WSL pane: the
+   *  distro and Linux user whose account home it is (wslAccountState.ts).
+   *  Kept with the pool mark across a codex or agy generation (no account),
+   *  so a later Claude line in that pane is checked on that home. Absent for
+   *  a native pick and on any older record. */
+  wslPlace?: WslPlace;
   /** A pool launch that found no pool account and runs on the caller's
    *  account instead (its usage key: an account id or 'default'): counted
    *  for the per-account worker limit only. Never set with `accountId`. */
@@ -114,6 +122,7 @@ function isLaunch(v: unknown): v is TaskLaunch {
     && (r.sandboxed === undefined || r.sandboxed === true)
     && (r.accountId === undefined || (typeof r.accountId === 'string' && r.accountId.length > 0 && r.accountId.length <= 128))
     && (r.pooled === undefined || r.pooled === true)
+    && (r.wslPlace === undefined || ((r.accountId !== undefined || r.pooled === true) && validWslTarget(r.wslPlace)))
     && (r.callerAccount === undefined || (typeof r.callerAccount === 'string' && r.callerAccount.length > 0 && r.callerAccount.length <= 128 && r.accountId === undefined));
 }
 
@@ -139,6 +148,9 @@ export interface LaunchRequest {
    *  pane of the task's latest generation: the pane keeps its env, so the new
    *  generation keeps what that one recorded. */
   accountId?: string | null;
+  /** Where that account runs in WSL (TaskLaunch.wslPlace); null = native.
+   *  Left out: kept from the task's last launch when it ran on the same account. */
+  wslPlace?: WslPlace | null;
   /** The caller's account a pool fallback runs on (TaskLaunch.callerAccount). */
   callerAccount?: string;
   /** A relaunch in an existing pane: the pane and its workspace name the
@@ -376,6 +388,11 @@ export class WorkerSlots {
     const sandboxed = req.sandboxed ?? (prior?.sandboxed === true && samePane);
     const accountId = req.accountId === null ? undefined : (req.accountId ?? (samePane ? prior?.accountId : undefined));
     const pooled = !!accountId || (prior?.pooled === true && prior.taskId === req.taskId);
+    // A respawn or resume on the same account runs in the same WSL home (its
+    // conversation lives there), and a relaunch in the same pane in the same
+    // place, whatever its line: the place stays with the pool mark.
+    const carried = prior?.taskId === req.taskId && (samePane || (!!accountId && prior.accountId === accountId)) ? prior.wslPlace : undefined;
+    const wslPlace = !pooled || req.wslPlace === null ? undefined : (req.wslPlace ?? carried);
     const next: TaskLaunch = {
       taskId: req.taskId,
       gen: top + 1,
@@ -386,6 +403,7 @@ export class WorkerSlots {
       state: 'launching',
       ...(sandboxed ? { sandboxed: true as const } : {}),
       ...(accountId ? { accountId } : {}),
+      ...(wslPlace ? { wslPlace: { distribution: wslPlace.distribution, user: wslPlace.user } } : {}),
       ...(!accountId && req.callerAccount ? { callerAccount: req.callerAccount } : {}),
       ...(pooled ? { pooled: true as const } : {}),
     };
@@ -463,10 +481,12 @@ export class WorkerSlots {
   setLaunchAccount(taskId: string, gen: number, accountId: string | undefined, opts: { unpool?: boolean } = {}): boolean {
     const t = this.tasks.get(taskId);
     if (!t || t.gen !== gen || t.accountId === undefined || (t.accountId === accountId && !opts.unpool)) return false;
-    const { accountId: _old, pooled: _pooled, ...rest } = t;
+    const { accountId: _old, pooled: _pooled, wslPlace, ...rest } = t;
     // A pane the pool keeps out of (WSL) unmarks the task too; any other drop keeps the mark.
     const keepMark = !opts.unpool && t.pooled === true;
-    this.tasks.set(taskId, { ...rest, ...(accountId ? { accountId } : {}), ...(accountId || keepMark ? { pooled: true as const } : {}) });
+    // A pane moved to another account in place still runs where it ran; the
+    // place goes only with the mark.
+    this.tasks.set(taskId, { ...rest, ...(accountId ? { accountId } : {}), ...((accountId || keepMark) && wslPlace ? { wslPlace } : {}), ...(accountId || keepMark ? { pooled: true as const } : {}) });
     this.persist();
     return true;
   }
@@ -475,14 +495,14 @@ export class WorkerSlots {
    *  launching one while its launch is under way in this run (a crash's
    *  leftover starts nothing), and every launched one (the caller decides
    *  whether its worker still runs). Released launches are left out. */
-  poolLaunches(): Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> {
-    const out: Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> = [];
+  poolLaunches(): Array<{ taskId: string; gen: number; accountId: string; wslPlace?: WslPlace; state: 'launching' | 'launched' }> {
+    const out: Array<{ taskId: string; gen: number; accountId: string; wslPlace?: WslPlace; state: 'launching' | 'launched' }> = [];
     for (const t of this.tasks.values()) {
       // A fallback onto the caller's account counts there (the per-account limit).
       const account = t.accountId ?? t.callerAccount;
       if (!account || t.state === 'released') continue;
       if (t.state === 'launching' && this.underway.get(t.taskId) !== t.gen) continue;
-      out.push({ taskId: t.taskId, gen: t.gen, accountId: account, state: t.state });
+      out.push({ taskId: t.taskId, gen: t.gen, accountId: account, ...(t.accountId && t.wslPlace ? { wslPlace: t.wslPlace } : {}), state: t.state });
     }
     return out;
   }

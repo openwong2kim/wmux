@@ -218,6 +218,8 @@ export function EmptyLeafFunnel() {
                     ...(projectSeed?.launchEnv ? { launchEnv: projectSeed.launchEnv } : {}),
                     // A WSL session's folder: a WSL shell in its distro.
                     ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
+                    // A conversation continued from a WSL pane: a WSL shell as that pane runs.
+                    ...(projectSeed?.wslFrom ? { shell: 'wsl.exe', wslFrom: projectSeed.wslFrom } : {}),
                     // A conversation continued on another account: that account's folder and vault.
                     ...(projectSeed?.accountId ? { accountId: projectSeed.accountId } : {}),
                     ...bootstrapOptions,
@@ -227,7 +229,7 @@ export function EmptyLeafFunnel() {
                 ),
                 // The profile's pane command was written for the workspace's own
                 // shell; a WSL shell opened for a WSL session does not run it.
-                projectSeed?.wslDistro && activeWorkspace.profile
+                (projectSeed?.wslDistro || projectSeed?.wslFrom) && activeWorkspace.profile
                   ? { ...activeWorkspace.profile, defaultPaneCommand: undefined }
                   : activeWorkspace.profile,
               ),

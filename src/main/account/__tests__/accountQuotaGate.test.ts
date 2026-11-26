@@ -59,3 +59,18 @@ describe('withAccountQuota and the account a create names', () => {
     expect(prepareLaunch).not.toHaveBeenCalled();
   });
 });
+
+describe('withAccountQuota with a launch place', () => {
+  it('hands the rotation where the launch runs, and nothing for a native one', async () => {
+    const prepareLaunch = vi.fn(async () => ({ kind: 'keep' as const }));
+    const place = { wsl: { distribution: 'Ubuntu', user: 'me' } };
+    await withAccountQuota({ workspaceId: 'ws', initialCommand: 'claude' }, { prepareLaunch, place });
+    expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws', place);
+    await withAccountQuota({ workspaceId: 'ws', initialCommand: 'claude' }, { prepareLaunch });
+    expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws');
+    // A WSL launch with no place given is one whose place is unknown, never a native one.
+    await withAccountQuota({ workspaceId: 'ws', initialCommand: 'claude' }, { prepareLaunch, wsl: true });
+    expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws', { wsl: null });
+  });
+});
+

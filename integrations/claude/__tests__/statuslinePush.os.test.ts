@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 const SCRIPT = fileURLToPath(new URL('../bin/wmux-statusline.mjs', import.meta.url));
 const SUFFIX = '-statusline-push-test';
@@ -158,6 +159,38 @@ async function fakeMain(pipe: string, result: unknown): Promise<{ received: Arra
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 600));
 
 describe('statusline live-usage push', () => {
+  it('a WSL pane\'s statusline (Windows node): its Linux config dir goes as is, with the token of this side\'s home, and names its account', async () => {
+    clearState();
+    writeToken();
+    const folder = 'C:\\Users\\me\\.wmux\\accounts\\claude-b';
+    const key = createHash('sha256').update(path.win32.normalize(folder).toLowerCase()).digest('hex').slice(0, 16);
+    fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.wmux', 'accounts.json'), JSON.stringify({ accounts: [{ id: 'b', name: 'Work', vendor: 'claude', configDir: folder }] }));
+    const linuxHome = `/home/me/.wmux/accounts/claude-${key}`;
+    const pipe = socketPathFor('wsl');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    try {
+      // CLAUDE_CONFIG_DIR is the interop side's own (a Windows folder): ignored for the WSL one.
+      const r = await run(input(42), pipe, { WMUX_STATUSLINE_CONFIG_DIR: `d:${linuxHome}`, CLAUDE_CONFIG_DIR: folder });
+      expect(r).toMatchObject({ code: 0, stderr: '' });
+      expect(r.stdout).toContain('Work');
+      await waitFor(() => main.received.length > 0);
+      expect(main.received[0]).toMatchObject({ method: 'usage.rateLimits', token: 'test-token', params: { configDir: linuxHome, ptyId: 'pty-test' } });
+      // Unset in the distro: reported as unset, never as the Windows default.
+      clearState();
+      await run(input(43), pipe, { WMUX_STATUSLINE_CONFIG_DIR: 'none', CLAUDE_CONFIG_DIR: folder });
+      await waitFor(() => main.received.length > 1);
+      expect(main.received[1]).toMatchObject({ params: { configDir: null } });
+      // Anything but an absolute dir is no account home, never the Windows folder.
+      clearState();
+      await run(input(44), pipe, { WMUX_STATUSLINE_CONFIG_DIR: 'd:.claude-work', CLAUDE_CONFIG_DIR: folder });
+      await waitFor(() => main.received.length > 2);
+      expect(main.received[2]).toMatchObject({ params: { configDir: null } });
+    } finally {
+      await main.close();
+    }
+  });
+
   it('no token: same stdout, exit 0, silent stderr, nothing written', async () => {
     clearState();
     removeToken();
@@ -210,6 +243,55 @@ describe('statusline live-usage push', () => {
       expect(main.received).toHaveLength(1);
       await run(input(31), pipe);   // changed → sent
       await waitFor(() => main.received.length === 2);
+    } finally {
+      await main.close();
+    }
+  });
+
+  it('prunes a closed pane\'s state after 7 days, at most once an hour', async () => {
+    clearState();
+    writeToken();
+    const pipe = socketPathFor('prune');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    const plant = (name: string, ageMs: number): string => {
+      fs.mkdirSync(stateDir(), { recursive: true });
+      const file = path.join(stateDir(), name);
+      fs.writeFileSync(file, JSON.stringify({ sig: 'x', ok: true, at: 0 }));
+      const t = (Date.now() - ageMs) / 1000;
+      fs.utimesSync(file, t, t);
+      return file;
+    };
+    const day = 24 * 60 * 60_000;
+    try {
+      const stale = plant('stale.json', 8 * day);
+      const recent = plant('recent.json', 6 * day);
+      await run(input(30.5), pipe);
+      await waitFor(() => !fs.existsSync(stale));
+      expect(fs.existsSync(recent)).toBe(true);
+      // Within the hour, nothing more is pruned.
+      const later = plant('later.json', 8 * day);
+      await run(input(31), pipe, { WMUX_PTY_ID: 'pty-prune-2' });
+      await waitFor(() => main.received.length === 2);
+      // The second push's own state is written just before its prune would run.
+      await waitFor(() => readStates().some((s) => s.ok && s.sig.includes('"pct":31')));
+      await settle();
+      expect(fs.existsSync(later)).toBe(true);
+    } finally {
+      await main.close();
+    }
+  });
+
+  it('a second pane on the same config dir pushes its own first sample', async () => {
+    clearState();
+    writeToken();
+    const pipe = socketPathFor('panes');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    try {
+      await run(input(30.5), pipe);
+      await waitFor(() => readStates().some((s) => s.ok));
+      await run(input(30.5), pipe, { WMUX_PTY_ID: 'pty-other' });
+      await waitFor(() => main.received.length === 2);
+      expect(main.received.map((r) => (r.params as { ptyId?: string }).ptyId)).toEqual(['pty-test', 'pty-other']);
     } finally {
       await main.close();
     }

@@ -90,7 +90,12 @@ export class UsageTrail {
    *  sample holds both. */
   record(key: string, snapshot: UsageSnapshot | null, nowMs: number): boolean {
     if (!snapshot) return false;
-    const { sessionPct: s5, sessionResetEpochSec: r5, weeklyPct: s7, weeklyResetEpochSec: r7 } = snapshot;
+    let { sessionPct: s5, sessionResetEpochSec: r5, weeklyPct: s7, weeklyResetEpochSec: r7 } = snapshot;
+    // A WSL home on a one-window plan (wslAccountState.ts) is kept with the
+    // other window as 0% and no reset, which its seed reads back as absent.
+    if (/@wsl:[0-9a-f]{16}$/.test(key) && (s5 !== undefined) !== (s7 !== undefined)) {
+      if (s5 === undefined) { s5 = 0; r5 = 0; } else { s7 = 0; r7 = 0; }
+    }
     if (s5 === undefined || r5 === undefined || s7 === undefined || r7 === undefined) return false;
     let list = this.trails.get(key);
     // Samples later than now were stamped by a clock that ran ahead and has
@@ -125,6 +130,11 @@ export class UsageTrail {
     this.pruneKey(key, list, nowMs);
     this.capKeys();
     return true;
+  }
+
+  /** Every key that holds samples. */
+  keys(): string[] {
+    return [...this.trails.keys()];
   }
 
   /** Samples for one key with since ≤ t ≤ until, oldest first (a copy). */

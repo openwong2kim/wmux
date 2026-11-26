@@ -1661,6 +1661,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // tests where `window` does not exist.
       if (typeof window !== 'undefined') {
         window.electronAPI?.settings?.setDefaultWslDistro?.(state.defaultWslDistro ?? null);
+        // The default shell too: main predicts a fan-out task pane's shell from it.
+        window.electronAPI?.settings?.setDefaultShell?.(state.defaultShell ?? null);
       }
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
       state.deckBrainEffort = sanitizeClaudeEffort(data.deckBrainEffort);

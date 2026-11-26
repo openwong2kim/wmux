@@ -59,6 +59,25 @@ describe('continue on a token account in a new pane', () => {
     expect(leaves.find((l) => l.id === leaf.id)?.surfaces.map((s) => s.ptyId)).toEqual(['pty-src']);
   });
 
+  it('from a WSL pane: a WSL shell that main runs as that pane runs, at its Linux folder', () => {
+    const ws = createWorkspace('work');
+    const leaf = ws.rootPane;
+    if (leaf.type !== 'leaf') throw new Error('fixture expects a leaf root');
+    leaf.surfaces = [{ id: 'surf-1', ptyId: 'pty-wsl', title: 'bash', shell: 'wsl.exe', cwd: '/home/me/repo' } as never];
+    leaf.activeSurfaceId = 'surf-1';
+    act(() => useStore.setState({
+      workspaces: [ws], activeWorkspaceId: ws.id, paneGate: 'ready', projectPaneSeed: {}, splitCwdSeed: {}, splitInheritsCwd: true,
+    }));
+    const command = `claude --resume ${SID}`;
+    act(() => { openContinuePane('pty-wsl', { accountId: 'acc-token', command, cwd: '/home/me/repo', wslFrom: 'pty-wsl' }); });
+    act(() => root.render(createElement(EmptyLeafFunnel)));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({
+      shell: 'wsl.exe', wslFrom: 'pty-wsl', cwd: '/home/me/repo', initialCommand: command, accountId: 'acc-token',
+    });
+    expect(create.mock.calls[0][0].wslDistro).toBeUndefined();
+  });
+
   it('opens nothing for a pane no workspace holds', () => {
     act(() => useStore.setState({ workspaces: [], projectPaneSeed: {}, splitCwdSeed: {} }));
     expect(openContinuePane('pty-gone', { accountId: 'acc-token', command: 'claude', cwd: '/w' })).toBe(false);

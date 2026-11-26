@@ -1751,8 +1751,8 @@ export class DaemonClient extends EventEmitter {
         }
         case 'agent.auth_lost': {
           // N4 — an agent's sign-in was lost, or its account works again (shared/agentAuthLost).
-          const data = event.data as { lost?: unknown; works?: unknown } | null;
-          this.emit('agent:authLost', { sessionId: event.sessionId, lost: data?.lost, works: data?.works });
+          const data = event.data as { lost?: unknown; works?: unknown; wsl?: unknown } | null;
+          this.emit('agent:authLost', { sessionId: event.sessionId, lost: data?.lost, works: data?.works, wsl: data?.wsl });
           break;
         }
         case 'input.typed':
