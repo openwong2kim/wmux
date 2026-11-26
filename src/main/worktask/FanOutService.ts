@@ -58,6 +58,7 @@ import {
   releaseFanoutPorts,
   FANOUT_SETUP_TIMEOUT_MS,
   runFanoutSetup,
+  workerAutoUpdateEnv,
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
 import {
@@ -83,6 +84,7 @@ import { workerTempEnv } from './fanoutTempDir';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { poolRelaunchRefusal } from './fanoutAccountPool';
+import type { WslPlace } from '../account/wslAccountState';
 import { getWorkerSlots, type WorkerSlots } from '../factory/workerSlots';
 import { loadFanoutTasksPerCall, loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
 import { commandChoosesModel, promptFlagForLauncher, type RoleBinding } from '../../shared/orchestratorRole';
@@ -180,11 +182,12 @@ ${push}${connections}${signedIn}`;
  *  `pick`: null = no pool account for this task (it launches as before). */
 export interface AccountPick {
   prepare: (task: { index: number }) => Promise<void>;
-  /** `cwd`: the folder the task's pane starts in (a WSL share starts WSL). */
-  /** `callerAccount`: no pool account can run it, so it runs on the
+  /** `cwd`: the folder the task's pane starts in (a WSL share starts WSL).
+   *  `wslPlace`: the account was picked for its home there (a WSL pane).
+   *  `callerAccount`: no pool account can run it, so it runs on the
    *  caller's account (that usage key), booked only to count toward the
    *  per-account worker limit. */
-  pick: (task: { index: number; cwd?: string }) => { accountId: string } | { callerAccount: string } | { refusal: string } | null;
+  pick: (task: { index: number; cwd?: string }) => { accountId: string; wslPlace?: WslPlace } | { callerAccount: string } | { refusal: string } | null;
 }
 
 export type LaunchSlot =
@@ -398,8 +401,9 @@ export interface FanOutRequest {
    *  worktree is rolled back; see rollbackTaskWorktree). A bot's fan-out answers from the
    *  factory switch, so turning the factory off stops a launch in progress.
    *  `task.index` names the task (its index in `titles`); `task.accountId`
-   *  the account the pool picked for it (accountPick), when it did. */
-  mayLaunch?: (task?: { index: number; accountId?: string; taskId?: string }) => string | null;
+   *  the account the pool picked for it (accountPick), when it did, and
+   *  `task.wslPlace` where it runs in WSL. */
+  mayLaunch?: (task?: { index: number; accountId?: string; wslPlace?: WslPlace; taskId?: string }) => string | null;
   /** The fan-out account pool (worktask/fanoutAccountPool.ts): for each task,
    *  `prepare` is awaited after its launch slot, then `pick` runs right before
    *  mayLaunch, and what it picked is booked in the task's launch record in
@@ -1495,7 +1499,7 @@ export class FanOutService {
     /** See FanOutRequest.originPin. */
     originPin?: string;
     /** See FanOutRequest.mayLaunch. */
-    mayLaunch?: (task?: { index: number; accountId?: string; taskId?: string }) => string | null;
+    mayLaunch?: (task?: { index: number; accountId?: string; wslPlace?: WslPlace; taskId?: string }) => string | null;
     /** See FanOutRequest.accountPick. */
     accountPick?: AccountPick;
     /** See FanOutRequest.awaitLaunchSlot. */
@@ -1863,6 +1867,7 @@ export class FanOutService {
     // From the pick to the launch record nothing is awaited: the account is
     // picked and booked in one step, so parallel launches spread.
     let accountId: string | undefined;
+    let wslPlace: WslPlace | undefined;
     let callerAccount: string | undefined;
     // The caller's last word before anything is launched.
     let refusal: string | null = null;
@@ -1870,13 +1875,13 @@ export class FanOutService {
       const picked = ctx.accountPick?.pick({ index: ctx.index, cwd }) ?? null;
       if (picked && 'refusal' in picked) refusal = picked.refusal;
       else if (picked && 'callerAccount' in picked) callerAccount = picked.callerAccount;
-      else if (picked) accountId = picked.accountId;
+      else if (picked) ({ accountId, wslPlace } = picked);
     } catch (err) {
       refusal = `the account pick failed: ${String(err)}`;
     }
     if (!refusal) {
       try {
-        refusal = ctx.mayLaunch?.({ index: ctx.index, taskId, ...(accountId ? { accountId } : {}) }) ?? null;
+        refusal = ctx.mayLaunch?.({ index: ctx.index, taskId, ...(accountId ? { accountId } : {}), ...(accountId && wslPlace ? { wslPlace } : {}) }) ?? null;
       } catch (err) {
         refusal = `the launch check failed: ${String(err)}`;
       }
@@ -1910,7 +1915,7 @@ export class FanOutService {
         ...(ctx.requester?.kind === 'bot' && ctx.requester.botId ? { botId: ctx.requester.botId } : {}),
         ownerWorkspaceId: ctx.verifiedWorkspaceId,
         sandboxed: firstRunEnv[CLAUDE_SANDBOXED_ENV] === '1',
-        ...(accountId ? { accountId } : {}),
+        ...(accountId ? { accountId, wslPlace: wslPlace ?? null } : {}),
         ...(callerAccount ? { callerAccount } : {}),
       }).gen;
     } catch (err) {
@@ -1981,8 +1986,10 @@ export class FanOutService {
     const initialCommand = launch.command;
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
-    // The first-run env decided above, over the task's own.
+    // The first-run env decided above, over the task's own; the worker's
+    // updater off unless the user's env sets it (workerAutoUpdateEnv).
     const paneEnv = {
+      ...workerAutoUpdateEnv(),
       ...taskEnv,
       ...firstRunEnv,
     };
@@ -2507,7 +2514,7 @@ export class FanOutService {
     const launches = this.launches ?? getWorkerSlots();
     // The same first-run env as the task's first launch: without it a
     // resumed worker stops at claude's folder-trust dialog (#2261).
-    const paneEnv = firstRunEnvForAgent(input.command);
+    const paneEnv = { ...workerAutoUpdateEnv(), ...firstRunEnvForAgent(input.command) };
     // A task the account pool put on an account resumes there (its
     // conversation lives in that folder), or is held while it cannot.
     const poolAccount = (launches as Partial<Pick<WorkerSlots, 'launchOf'>>).launchOf?.(input.taskId)?.accountId;

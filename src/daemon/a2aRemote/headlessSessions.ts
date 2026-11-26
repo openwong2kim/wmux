@@ -2,6 +2,7 @@ import { agentLauncherStem, agentRow } from '../../shared/agentIdentity';
 import { agentExecEnv } from '../../shared/execEnv';
 import { captureProcessTree, recordedRootMatcher, type VerifiedTreeKillResult } from '../automation/verifiedTreeKill';
 import { whichOnPath } from '../web/agentLaunch';
+import { workerAutoUpdateEnv } from '../../main/worktask/fanoutEnvironment';
 import { defaultHeadlessProcDeps, snapshotTree, stillHeld, type HeadlessProcDeps } from './headlessProcs';
 import type { HeadlessSurvivor } from './headlessStartStore';
 import type { HeadlessDestroyResult, HeadlessSessionPort } from './headlessStarter';
@@ -81,7 +82,8 @@ export function createHeadlessSessions(deps: HeadlessSessionsDeps): HeadlessSess
       const space = command.indexOf(' ');
       const launch = `/usr/bin/env PATH='${pinned}' '${agentBin}'${space < 0 ? '' : command.slice(space)}`;
       await deps.createSession(
-        { id: sessionId, exec: { command: HEADLESS_REPLAY_LINE }, cwd, env: { ...base, ...extra, PATH: pinned } },
+        // A worker's updater stays off unless the daemon's own env says otherwise (workerAutoUpdateEnv).
+        { id: sessionId, exec: { command: HEADLESS_REPLAY_LINE }, cwd, env: { ...base, ...workerAutoUpdateEnv(base), ...extra, PATH: pinned } },
         { execLaunchCommand: launch, remoteDurable: true },
       );
       // Its process, with the start time the daemon reads right after the spawn (waited for, so a

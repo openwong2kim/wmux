@@ -237,6 +237,7 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
                 },
                 created: None,
                 cmdline: None,
+                linux: None,
             };
             // Only the detailed table joins the two reads and may drop a row.
             // The liveness table (no details) keeps every Toolhelp row, so a
@@ -736,6 +737,7 @@ mod tests {
             name: String::new(),
             created: None,
             cmdline: None,
+            linux: None,
         };
         // A differing handle time would read as a reused pid (false).
         assert!(read_details(&mut row, own.created.expect("listed time")).unwrap());
@@ -749,6 +751,7 @@ mod tests {
             name: name.into(),
             created: None,
             cmdline: None,
+            linux: None,
         }
     }
 
@@ -871,6 +874,7 @@ mod tests {
             name: "pwsh.exe".into(),
             created: None,
             cmdline: None,
+            linux: None,
         };
         let listed = |ppid: u32, name: &str| Listed {
             ppid,

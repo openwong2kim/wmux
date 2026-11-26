@@ -38,6 +38,7 @@ interface Rig {
 const rigs: Rig[] = [];
 afterEach(() => {
   for (const r of rigs.splice(0)) r.coord.stop();
+  vi.unstubAllEnvs();
 });
 
 function rig(work: () => A2aSpawnWork, over: {
@@ -172,6 +173,7 @@ describe('cards', () => {
 
 describe('starting an approved request', () => {
   it('worktree, a workspace running the launcher alone (stamped inside its create), then started; no wire field reaches the command line or env', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', undefined);
     const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }));
     r.coord.start();
     await vi.waitFor(() => expect(calls(r, A2A_SPAWN_RPC.started)).toHaveLength(1), { timeout: 5_000 });
@@ -183,14 +185,37 @@ describe('starting an approved request', () => {
       name: 'From HOME-A',
       cwd: '/wt/remote-x/apps',
       initialCommand: 'claude',
-      // A worktree nobody opened here: no folder-trust prompt for the agent.
-      env: { CLAUDE_CODE_SANDBOXED: '1' },
+      // A worktree nobody opened here: no folder-trust prompt for the agent; and a worker's
+      // updater stays off (it would rewrite the launcher every pane runs).
+      env: { CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '1' },
       workerPermissionMode: 'acceptEdits',
       remoteSpawnedBy: { hostId: HOST, name: 'HOME-A', spawnId: SPAWN, agent: 'claude' },
     });
     expect(JSON.stringify(params)).not.toContain(PROMPT);
     expect(r.removed).toEqual([]);
     expect(calls(r, A2A_SPAWN_RPC.started)).toEqual([{ hostId: HOST, spawnId: SPAWN, workspaceId: 'ws-new', paneId: 'pane-new' }]);
+  });
+
+  it('makes the worktree from the base the asker named, and the worktree\'s base note goes with started', async () => {
+    const note = 'git fetch origin release/2.0 failed (offline); branched from HEAD';
+    const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }), {
+      claim: () => ({ ok: true, claim: { ...claim, base: 'release/2.0' } }),
+      worktree: () => ({ ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${SPAWN}`, base: 'a'.repeat(40), baseNote: note }),
+    });
+    r.coord.start();
+    await vi.waitFor(() => expect(calls(r, A2A_SPAWN_RPC.started)).toHaveLength(1), { timeout: 5_000 });
+    expect(r.worktree).toHaveBeenCalledWith({ repoPath: '/repo', sub: 'apps', spawnId: SPAWN, base: 'release/2.0' });
+    expect(calls(r, A2A_SPAWN_RPC.started)).toEqual([{ hostId: HOST, spawnId: SPAWN, workspaceId: 'ws-new', paneId: 'pane-new', baseNote: note }]);
+  });
+
+  it('keeps the user\'s own DISABLE_AUTOUPDATER: the worker\'s env does not set it over theirs', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', '0');
+    const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }));
+    r.coord.start();
+    await vi.waitFor(() => expect(calls(r, A2A_SPAWN_RPC.started)).toHaveLength(1), { timeout: 5_000 });
+    const params = r.render.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(params['env']).toEqual({ CLAUDE_CODE_SANDBOXED: '1' });
+    r.coord.stop();
   });
 
   it('the mode this PC set reaches the launch for every mode, manual included (the renderer turns it into the flag)', async () => {

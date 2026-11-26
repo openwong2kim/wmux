@@ -345,8 +345,9 @@ export function registerSpawnStartRpc(
     const id = ids(p);
     const workspaceId = p['workspaceId'];
     const paneId = p['paneId'];
-    if (!id || !isSafeId(workspaceId) || !isSafeId(paneId)) return bad;
-    return deps.receiver.started(id.hostId, id.spawnId, { workspaceId, paneId });
+    const baseNote = p['baseNote'];
+    if (!id || !isSafeId(workspaceId) || !isSafeId(paneId) || (baseNote !== undefined && typeof baseNote !== 'string')) return bad;
+    return deps.receiver.started(id.hostId, id.spawnId, { workspaceId, paneId }, baseNote);
   });
   onRpc(A2A_SPAWN_RPC.failed, async (p) => {
     const id = ids(p);

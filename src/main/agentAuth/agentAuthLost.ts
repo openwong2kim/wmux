@@ -21,6 +21,11 @@ import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { AgentSetupDetector } from '../firstRun/AgentSetupDetector';
 import { dispatchNotification } from '../notification/dispatchNotification';
 import type { DaemonClient } from '../DaemonClient';
+import { getAccountStore } from '../account/accountStore';
+import { getWslAccountState, type WslAccountState } from '../account/wslAccountState';
+import { canonicalAccountFolder } from '../../shared/wslAccountHome';
+import { parseWslAuthRef } from '../../shared/wslAccountMark';
+import { validWslTarget } from '../../shared/wslTarget';
 
 const AGENT_NAME = { claude: 'Claude Code', codex: 'Codex' } as const;
 
@@ -75,6 +80,29 @@ export class AuthLostBoard {
 
   list(): AuthLostEntry[] {
     return [...this.entries.values()].map((e) => ({ ...e, ptyIds: [...e.ptyIds] }));
+  }
+}
+
+/**
+ * A WSL home's sign-in evidence (the daemon sends the pane's target only for a
+ * hook whose transcript lies under that home, daemon/wslAuthEvidence.ts):
+ * recorded for the account whose folder the sign-in key names, in that
+ * distro as that user (wslAccountState.ts).
+ */
+export function noteWslHomeAuth(
+  wsl: unknown,
+  account: { agent: string; configDir: string | null } | null,
+  signedIn: boolean,
+  deps: { accounts?: () => ReadonlyArray<{ id: string; vendor: string; configDir: string }>; state?: Pick<WslAccountState, 'noteAuth'> } = {},
+): void {
+  if (!account || !validWslTarget(wsl)) return;
+  const ref = parseWslAuthRef(account.configDir);
+  if (!ref || ref.distro.toLowerCase() !== wsl.distribution.toLowerCase()) return;
+  const folder = canonicalAccountFolder(ref.configDir);
+  const accounts = deps.accounts ?? (() => getAccountStore().listAccounts());
+  const state = deps.state ?? getWslAccountState();
+  for (const a of accounts()) {
+    if (a.vendor === account.agent && canonicalAccountFolder(a.configDir) === folder) state.noteAuth(a.id, wsl, signedIn);
   }
 }
 
@@ -134,8 +162,9 @@ export function registerAgentAuthHandlers(
     if (win && !win.isDestroyed()) win.webContents.send(IPC.AGENT_AUTH_LOST_CHANGED, board.list());
   };
 
-  const onAuthLost = (payload: { sessionId: string; lost?: unknown; works?: unknown }): void => {
+  const onAuthLost = (payload: { sessionId: string; lost?: unknown; works?: unknown; wsl?: unknown }): void => {
     const works = parseAuthAccount(payload.works);
+    noteWslHomeAuth(payload.wsl, works ?? parseAgentAuthLost(payload.lost), works !== null);
     if (works) {
       if (board.accountWorks(works.agent, works.configDir)) publish();
       return;

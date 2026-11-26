@@ -10,6 +10,7 @@ import {
   type UsageRpcDeps,
 } from '../usage.rpc';
 import { paneUsageWindows, resetPaneUsageLimitsForTest } from '../../../usageLimit/paneUsageLimits';
+import { wslAccountHomeKey } from '../../../../shared/wslAccountHome';
 
 const RESET = 1_900_000_000;
 // Platform-neutral fixtures: absolute on POSIX and Windows alike.
@@ -169,5 +170,116 @@ describe('usage.rateLimits handler', () => {
     const { call, deps } = setup([{ id: 'A', configDir: ACCT_A }]);
     await call(sample({ configDir: ACCT_A }));
     expect(deps.ingestAccount).toHaveBeenCalledWith('A', expect.objectContaining({ session: { pct: 13, resetEpochSec: RESET } }));
+  });
+});
+
+describe('usage.rateLimits from a WSL pane', () => {
+  const FOLDER = 'C:\\Users\\me\\.wmux\\accounts\\claude-b';
+  const TARGET = { distribution: 'Ubuntu', user: 'me' };
+  const ENV = { CLAUDE_CONFIG_DIR: FOLDER, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' };
+  const HOME = `/home/me/.wmux/accounts/claude-${wslAccountHomeKey(FOLDER)}`;
+  afterEach(() => resetPaneUsageLimitsForTest());
+
+  type Pane = { target: typeof TARGET; env: Record<string, string> } | null | Error;
+  function setup(pane: Pane | ((fresh: boolean) => Pane), wsl = true) {
+    let handler: ((p: Record<string, unknown>) => Promise<unknown>) | null = null;
+    const router = { register: (_m: string, h: typeof handler) => { handler = h; } } as unknown as RpcRouter;
+    const deps: UsageRpcDeps = {
+      listClaudeAccounts: () => [{ id: 'B', configDir: FOLDER.toUpperCase() }],
+      defaultConfigDir: () => NOWHERE,
+      ingestDefault: vi.fn(() => true),
+      ingestAccount: vi.fn(() => true),
+      noteWslAccountSample: vi.fn(),
+      isWslPane: () => wsl,
+      wslPane: vi.fn(async (_id: string, fresh: boolean) => {
+        const p = typeof pane === 'function' ? pane(fresh) : pane;
+        if (p instanceof Error) throw p;
+        return p;
+      }),
+    };
+    registerUsageRpc(router, deps);
+    return { call: (p: Record<string, unknown>) => (handler ? handler(p) : Promise.reject(new Error('not registered'))), deps };
+  }
+
+  it('takes the pane\'s own account home as the pane\'s window only, never the account\'s (Windows) entry', async () => {
+    // The distro home may be signed in to another login than the account's
+    // Windows folder: its numbers must not move what rotation and the reserve read.
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    await expect(call(sample({ configDir: HOME }))).resolves.toEqual({ ok: true, applied: true });
+    expect(deps.ingestAccount).not.toHaveBeenCalled();
+    expect(deps.ingestDefault).not.toHaveBeenCalled();
+    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+    // The home's own reading, keyed by the pane's own distro and user.
+    expect(deps.noteWslAccountSample).toHaveBeenCalledTimes(1);
+    expect(deps.noteWslAccountSample).toHaveBeenCalledWith('B', TARGET, expect.objectContaining({ session: expect.anything() }));
+  });
+
+  it('maps nothing for another home, another user, a failed lookup, or an unmarked env', async () => {
+    const cases: Array<[Pane, string]> = [
+      [{ target: TARGET, env: ENV }, '/home/me/.claude'],
+      [{ target: { ...TARGET, user: 'other' }, env: ENV }, HOME],
+      [{ target: TARGET, env: { CLAUDE_CONFIG_DIR: FOLDER } }, HOME],
+      [null, HOME],
+      [new Error('daemon gone'), HOME],
+    ];
+    for (const [pane, configDir] of cases) {
+      const { call, deps } = setup(pane);
+      await expect(call(sample({ configDir }))).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+      expect(deps.ingestAccount).not.toHaveBeenCalled();
+      expect(deps.ingestDefault).not.toHaveBeenCalled();
+      // (c) A forged sample (another user's home, no live pane) leaves the WSL store unchanged.
+      expect(deps.noteWslAccountSample).not.toHaveBeenCalled();
+    }
+  });
+
+  it('asks again past a kept lookup when the sample names another home (the pane was rebound)', async () => {
+    const OTHER = 'C:\\Users\\me\\.wmux\\accounts\\claude-c';
+    const homeC = `/home/me/.wmux/accounts/claude-${wslAccountHomeKey(OTHER)}`;
+    const { call, deps } = setup((fresh) => ({ target: TARGET, env: fresh ? { ...ENV, CLAUDE_CONFIG_DIR: OTHER } : ENV }));
+    await expect(call(sample({ configDir: homeC }))).resolves.toEqual({ ok: true, applied: true });
+    expect(deps.wslPane).toHaveBeenNthCalledWith(1, 'pty-1', false);
+    expect(deps.wslPane).toHaveBeenNthCalledWith(2, 'pty-1', true);
+    // A match needs no second look.
+    const again = setup({ target: TARGET, env: ENV });
+    await again.call(sample({ configDir: HOME }));
+    expect(again.deps.wslPane).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the WSL lookup with the sample\'s config dir (a pane main has not seen yet is judged by it)', async () => {
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    const isWslPane = vi.fn(() => true);
+    deps.isWslPane = isWslPane;
+    await call(sample({ configDir: HOME }));
+    expect(isWslPane).toHaveBeenCalledWith('pty-1', HOME);
+  });
+
+  it('waits for a pane judged by the daemon\'s record: a WSL one is never read as the Windows default, a native one is', async () => {
+    const wsl = setup({ target: TARGET, env: ENV });
+    wsl.deps.isWslPane = async () => true;
+    await expect(wsl.call(sample())).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+    expect(wsl.deps.ingestDefault).not.toHaveBeenCalled();
+    const native = setup(null);
+    native.deps.defaultConfigDir = () => HOME;
+    native.deps.isWslPane = async () => false;
+    await native.call(sample());
+    expect(native.deps.wslPane).not.toHaveBeenCalled();
+    expect(native.deps.ingestDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unset config dir is the distro\'s own sign-in: no account and not the Windows default, only the pane\'s window', async () => {
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    await expect(call(sample())).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+    expect(deps.ingestDefault).not.toHaveBeenCalled();
+    expect(deps.ingestAccount).not.toHaveBeenCalled();
+    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+  });
+
+  it('a native pane never asks the daemon, and its unset config dir is the default profile', async () => {
+    const native = setup({ target: TARGET, env: ENV }, false);
+    await native.call(sample({ configDir: HOME }));
+    await expect(native.call(sample())).resolves.toEqual({ ok: true, applied: true });
+    expect(native.deps.wslPane).not.toHaveBeenCalled();
+    expect(native.deps.ingestAccount).not.toHaveBeenCalled();
+    expect(native.deps.ingestDefault).toHaveBeenCalledTimes(1);
   });
 });

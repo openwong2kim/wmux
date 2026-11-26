@@ -3,6 +3,9 @@ import { approvalOnScreen } from './approvals/approvalOnScreen';
 import { AWAITING_RENDER_WINDOW_BYTES, liveGeometry, renderPaneScreen, type AwaitingFrame, type RenderablePane } from './AwaitingScreenVerifier';
 import { createSnapshotLane, generateTextSnapshotUnqueued, runSmallSnapshotJob } from './HeadlessSnapshot';
 import { UNKNOWN_CELL } from './sessionTextReplay';
+import { screenReplay, type CheckpointRing } from './screenCheckpoint';
+import { refreshScreenCheckpoint, type CheckpointModesOf } from './guardedTailRead';
+import { noteScreenParse } from './screenReadCache';
 import { joinWrappedRows } from './web/hostSearch';
 import { FOLDER_TRUST_DEFAULT_BUDGET_MS } from '../shared/folderTrustWording';
 import type { DaemonPipeServer } from './DaemonPipeServer';
@@ -75,9 +78,14 @@ const DIALOG_SPAN_ROWS = 44;
 /** What the verdict needs of a session (a ManagedSession). */
 export type FolderTrustSession = RenderablePane & {
   meta: { state: DaemonSessionState };
-  /** The lifetime byte count: the mark a whole-ring verdict was read at. */
-  ringBuffer: { readonly totalBytesWritten: number };
-  bridge: { heldOutput(): { total: number; read(): { data: Buffer; dropped: number } } | null };
+  /** The lifetime byte count: the mark a whole-ring verdict was read at. A whole RingBuffer (a CheckpointRing)
+   *  lets that read start at the ring's screen checkpoint. */
+  ringBuffer: { readonly totalBytesWritten: number } & Partial<CheckpointRing>;
+  bridge: {
+    heldOutput(): { total: number; read(): { data: Buffer; dropped: number } } | null;
+    /** Whether the pane is on the alternate screen, where a screen checkpoint is kept. */
+    readonly outputModes?: { preamble(windowStart: number): string; readonly altScreen?: boolean } | null;
+  };
   /** Resized while muted: the held output was dropped, or mixes sizes. */
   resizedWhileMuted?: boolean;
 };
@@ -172,7 +180,10 @@ const wholeRingRuns = new WeakMap<FolderTrustSession, { running?: WholeRingRun; 
  * own, under its own budget rather than the request's. The request waits for
  * it until its own deadline ('unknown', 'timeout', past it); the parse goes
  * on, and its verdict answers every request until the pane prints or is
- * resized.
+ * resized. That parse starts at the ring's screen checkpoint when one applies
+ * (screenCheckpoint.ts): the checkpoint's grid and the bytes after it, its
+ * unseen cells still marked, instead of the whole 8 MiB ring on every probe
+ * of a busy agent's pane.
  */
 export async function folderTrustState(deps: FolderTrustDeps, id: string): Promise<FolderTrustState> {
   return (await readFolderTrust(deps, id)).state;
@@ -206,8 +217,16 @@ export async function readFolderTrust(deps: FolderTrustDeps, id: string): Promis
     if (!tail) return { state: 'unknown', reason: dropped ? 'timeout' : 'unreadable' };
     if ('reading' in tail) return tail.reading;
     const reading = verdictOf(tail.frame);
-    // A tail that read the whole ring, or decided, is the answer.
-    if (tail.whole || reading.state !== 'unknown') return reading;
+    if (tail.whole) {
+      // The whole screen at this mark: kept like a whole-ring parse's, so a probe of output that has not moved parses nothing.
+      const size = liveGeometry(session);
+      if (size && size.cols === tail.frame.cols && !session.bridge.isMuted && tail.mark === session.ringBuffer.totalBytesWritten) {
+        wholeRingVerdicts.set(session, { mark: tail.mark, muted: false, cols: size.cols, rows: size.rows, reading });
+      }
+      return reading;
+    }
+    // A tail that decided is the answer.
+    if (reading.state !== 'unknown') return reading;
     // A whole ring kept for this tail's bytes, or a parse that reads at least them.
     const kept = currentWholeRingVerdict(session, tail.mark);
     if (kept) return kept;
@@ -239,6 +258,12 @@ async function readTail(
   const readable = readableOutput(session);
   if (!readable) return { reading: MUTED };
   const pane = readable.pane();
+  const ring = session.bridge.isMuted ? null : checkpointRing(session.ringBuffer);
+  if (ring) {
+    // The screen from its checkpoint, when that read is no larger than a tail: the whole ring's screen at a tail's cost.
+    const screen = await renderScreenRead(() => (deps.getSession(id) === session ? pane : undefined), ring, session, async (req) => (dropped() ? { ok: false } : parse(req)), AWAITING_RENDER_WINDOW_BYTES + TAIL_SLACK_BYTES);
+    if (screen !== 'oversized') return screen ? { frame: screen, mark: screen.mark, whole: true } : null;
+  }
   let firstRead = true;
   let whole = false;
   const tailFirst: Snapshot = async (req) => {
@@ -348,7 +373,9 @@ async function parseWholeRing(
       overBudget = !outcome.ok && outcome.reason === 'budget';
       return outcome;
     };
-    const frame = await renderPaneScreen(live, parse, { tail: false }).catch(() => null);
+    const ring = muted ? null : checkpointRing(session.ringBuffer);
+    const screen = ring ? await renderScreenRead(live, ring, session, parse).catch(() => null) : undefined;
+    const frame = screen === undefined ? await renderPaneScreen(live, parse, { tail: false }).catch(() => null) : screen === 'oversized' ? null : screen;
     const reading: FolderTrustReading = frame ? verdictOf(frame) : { state: 'unknown', reason: 'unreadable' };
     if (frame || overBudget) {
       wholeRingVerdicts.set(session, {
@@ -364,6 +391,54 @@ async function parseWholeRing(
   } catch {
     return { state: 'unknown', reason: 'unreadable' };
   }
+}
+
+function checkpointRing(ring: FolderTrustSession['ringBuffer']): CheckpointRing | null {
+  return typeof ring.readAllWithGeometry === 'function' && typeof ring.clearGeneration === 'number' && typeof ring.totalCapacity === 'number'
+    ? (ring as CheckpointRing)
+    : null;
+}
+
+/**
+ * The screen of an unmuted session as renderPaneScreen rebuilds it from the
+ * whole ring (each stretch at the size it was written at, unseen cells
+ * marked, a resize during the read rejected), but read through screenReplay:
+ * from the ring's screen checkpoint and the bytes after it when one applies,
+ * which is the same screen, else the whole ring exactly as before.
+ */
+async function renderScreenRead(
+  live: () => RenderablePane | undefined,
+  ring: CheckpointRing,
+  session: FolderTrustSession,
+  parse: Snapshot,
+  /** Bytes past which nothing is parsed ('oversized'). */
+  maxBytes = Number.POSITIVE_INFINITY,
+): Promise<AwaitingFrame | 'oversized' | null> {
+  const pane = live();
+  const size = pane ? liveGeometry(pane) : null;
+  if (!pane || !size) return null;
+  const outputModes = session.bridge.outputModes;
+  // Read live: a checkpoint job checks the screen again once it has parsed.
+  const modes: CheckpointModesOf | null = outputModes ? { get altScreen() { return outputModes.altScreen === true; }, preamble: (at) => outputModes.preamble(at) } : null;
+  // Read (and copied) before the first await: `mark` names exactly these bytes.
+  const read = screenReplay(ring, modes, size, { markUnknown: true });
+  // A checkpoint far behind the output gets a newer one, as StallWatch's read asks (guardedTailRead.ts).
+  if (modes) {
+    refreshScreenCheckpoint(ring, modes, () => liveGeometry(session), { replayBytes: read.replay.length, writtenAt: read.writtenAt, rebuilt: read.rebuilt });
+  }
+  if (read.replay.length > maxBytes) return 'oversized';
+  const askedAt = performance.now();
+  const outcome = await parse({ ...size, scrollback: 0, initial: read.replay, ...(read.geometry ? { geometry: read.geometry } : {}) });
+  noteScreenParse('pane', performance.now() - askedAt, read.replay.length);
+  if (!outcome.ok || live() !== pane) return null;
+  const after = liveGeometry(pane);
+  if (!after || after.cols !== size.cols || after.rows !== size.rows) return null;
+  const texts = outcome.rows.map((r) => r.text);
+  const wrapped = outcome.rows.some((r) => r.wrapped !== undefined) ? { wrapped: outcome.rows.map((r) => r.wrapped === true) } : {};
+  const frame = { rows: texts, mark: read.writtenAt, cols: size.cols, ...wrapped };
+  if (!read.marked || !texts.some((t) => t.includes(UNKNOWN_CELL))) return frame;
+  // As renderPaneScreen: every other reader sees an unknown cell as a blank.
+  return { ...frame, rows: texts.map((t) => t.split(UNKNOWN_CELL).join(' ').replace(/ +$/, '')), unknown: texts };
 }
 
 /**

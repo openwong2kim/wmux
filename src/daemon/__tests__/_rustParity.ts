@@ -28,7 +28,7 @@ export const available = fs.existsSync(modulePath);
 if (!available && process.env.WMUX_REQUIRE_RUST_CORE) throw new Error(`native core missing: ${modulePath}`);
 
 interface Row { wrapped: boolean; text: string; cells: string }
-interface State { head: string; rows: Row[]; cursorRow: number }
+export interface State { head: string; rows: Row[]; cursorRow: number }
 
 function capture(t: Terminal): State {
   const rows: Row[] = [];
@@ -98,6 +98,17 @@ export async function parity(req: SnapshotRequest, rust: Buffer, xterm: Buffer):
  */
 export async function liveDifference(req: SnapshotRequest, payload: Buffer): Promise<string | undefined> {
   return difference(await replay(req, payload), await replay(req));
+}
+
+/**
+ * liveDifference with `adjust` run on both sides' states first: a known gap
+ * pinned to the one field it leaves out, the rest compared in full.
+ */
+export async function liveDifferenceExcept(req: SnapshotRequest, payload: Buffer, adjust: (state: State, index: number) => void): Promise<string | undefined> {
+  const restored = await replay(req, payload);
+  const live = await replay(req);
+  for (const states of [restored, live]) states.forEach(adjust);
+  return difference(restored, live);
 }
 
 /** First difference, or undefined. Trailing printed spaces may be dropped. */

@@ -17,6 +17,7 @@
 // network at all.
 
 import path from 'node:path';
+import { getWslAccountState, type WslPlace } from './wslAccountState';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import {
@@ -65,6 +66,18 @@ export interface AccountRotationDeps {
   claudeUsage?: ClaudeUsageSource | null;
   readCodexLimits?: (sessionsDir: string) => Promise<RolloutLimits | null>;
   dirExists?: (dir: string) => boolean;
+  /** A WSL home's reading (wslAccountState.ts); the default is the app's store. */
+  wslReading?: (accountId: string, place: WslPlace, role: 'bound' | 'candidate') => AccountQuotaReading | null;
+}
+
+/**
+ * Where a launch runs, when it is in WSL: its distro and user, or null when
+ * either is unknown. Absent for a native launch. A WSL launch is decided from
+ * WSL readings only (and a native one never from them): each home is a
+ * sign-in of its own (wslAccountState.ts).
+ */
+export interface LaunchPlace {
+  wsl: WslPlace | null;
 }
 
 /** Null unless the account's last probe succeeded: a logged-out or erroring
@@ -191,8 +204,14 @@ export class AccountRotationService {
    * are candidates: when that group is out the launch is held, never moved to
    * another group.
    */
-  async prepareLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
+  async prepareLaunch(vendor: Vendor, workspaceId: string | undefined, place?: LaunchPlace): Promise<RotationDecision> {
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
+    // In WSL, a launch whose distro or user is unknown has no home to read.
+    // Only Claude homes hold readings (Codex's rollouts are the distro's), so
+    // a Codex launch there reads none and keeps too.
+    const wsl = place?.wsl;
+    if (place && !wsl) return { kind: 'keep' };
+    const wslReading = this.deps.wslReading ?? ((id: string, p: WslPlace, role: 'bound' | 'candidate') => getWslAccountState().reading(id, p, role));
     const registered = this.accounts(vendor);
     if (registered.length === 0) return { kind: 'keep' };
     const bindingOf = () => (workspaceId
@@ -210,13 +229,15 @@ export class AccountRotationService {
     const boundAccount = registered.find((a) => a.id === bound)!;
     const group = accountGroupOf(boundAccount);
     const pool = registered.filter((a) => accountGroupOf(a) === group);
-    const boundReading = await this.reading(boundAccount, deadline);
+    const readOf = (a: Account, role: 'bound' | 'candidate'): Promise<AccountQuotaReading | null> =>
+      (wsl ? Promise.resolve(wslReading(a.id, wsl, role)) : this.reading(a, deadline));
+    const boundReading = await readOf(boundAccount, 'bound');
     if (evaluateQuota(boundReading, now).usable) return { kind: 'keep' };
     // The switch may have gone off while the bound account was being read.
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
     const read = [
       { a: boundAccount, reading: boundReading },
-      ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await this.reading(a, deadline) }))),
+      ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await readOf(a, 'candidate') }))),
     ];
     // ...or while the others were.
     if (!this.getSettings()[vendor]) return { kind: 'keep' };

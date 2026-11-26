@@ -1,5 +1,5 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
-import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS } from '../shared/wslIntegration';
+import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS, WSL_CLAUDE_TOKEN_MARK } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -56,6 +56,9 @@ const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
 /** The full reserved wmux namespace (auth token + identity vars). */
 const RESERVED_PREFIX = /^WMUX_/i;
 
+/** The Claude sign-in that withSecretEnv flags for a WSL account home's first-run mark. */
+const CLAUDE_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
+
 /**
  * Return a fresh copy of a caller-supplied env with the keys no caller can
  * legitimately supply removed. Applied to every supplied env, fresh create and
@@ -82,7 +85,15 @@ const RESERVED_PREFIX = /^WMUX_/i;
  */
 export function withSecretEnv(env: Record<string, string>, secretEnv: Record<string, string>, wsl: boolean): Record<string, string> {
   const out = { ...env, ...secretEnv };
-  if (wsl) out.WSLENV = mergeWslEnv(env.WSLENV, Object.keys(secretEnv));
+  if (!wsl) return out;
+  const names = Object.keys(secretEnv);
+  // A Claude token: its account's home in the distro marks first-run setup
+  // done (WSL_ACCOUNT_SH). The mark is a flag, never the value.
+  if (secretEnv[CLAUDE_TOKEN_ENV]) {
+    out[WSL_CLAUDE_TOKEN_MARK] = '1';
+    names.push(WSL_CLAUDE_TOKEN_MARK);
+  }
+  out.WSLENV = mergeWslEnv(env.WSLENV, names);
   return out;
 }
 

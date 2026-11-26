@@ -63,9 +63,10 @@ describe('WorkspaceSlice cold-park', () => {
     expect(store.getState().parkedWorkspaceIds[wsC.id]).toBe(true);
   });
 
-  it('never parks a workspace that holds a non-terminal surface', () => {
-    // Give B a browser surface — its live webview state has no daemon-side
-    // replay, so cold-park must skip it even when idle past the threshold.
+  it('parks a workspace that holds a non-terminal surface, and keeps it parked', () => {
+    // B holds a browser. WorkspaceSlot keeps a parked mixed workspace's pane
+    // tree mounted and unmounts only its terminals, so the sweep parks it
+    // like any other idle hidden workspace.
     const leaf = wsB.rootPane;
     if (leaf.type === 'leaf') {
       leaf.surfaces.push({
@@ -82,18 +83,24 @@ describe('WorkspaceSlice cold-park', () => {
     const store = createTestStore([wsA, wsB], wsA.id);
     const t0 = 1_000_000;
     store.getState().sweepColdPark(t0, THRESHOLD);
-    store.getState().sweepColdPark(t0 + THRESHOLD * 2, THRESHOLD);
+    store.getState().sweepColdPark(t0 + THRESHOLD - 1, THRESHOLD);
     expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
+    store.getState().sweepColdPark(t0 + THRESHOLD, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
+    // A later sweep does not flap it back out.
+    store.getState().sweepColdPark(t0 + THRESHOLD * 2, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
   });
 
-  it('un-parks a parked workspace that gains a non-terminal surface', () => {
+  it('keeps a parked workspace parked when it gains a non-terminal surface', () => {
     const store = createTestStore([wsA, wsB], wsA.id);
     const t0 = 1_000_000;
     store.getState().sweepColdPark(t0, THRESHOLD);
     store.getState().sweepColdPark(t0 + THRESHOLD, THRESHOLD);
     expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
-    // A browser.open targeting the parked workspace adds a webview surface — the
-    // next sweep must unpark it so the surface mounts (not blank until reveal).
+    // A browser.open targeting the parked workspace adds a webview surface.
+    // WorkspaceSlot mounts the pane tree for it (terminals stay parked), so
+    // the sweep has no reason to unpark the workspace.
     store.setState((s) => {
       const leaf = s.workspaces.find((w) => w.id === wsB.id)!.rootPane;
       if (leaf.type === 'leaf') {
@@ -104,7 +111,7 @@ describe('WorkspaceSlice cold-park', () => {
       }
     });
     store.getState().sweepColdPark(t0 + THRESHOLD * 2, THRESHOLD);
-    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
   });
 
   it('setActiveWorkspace un-parks the incoming workspace synchronously', () => {

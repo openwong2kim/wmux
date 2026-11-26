@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { UNSEEN_INPUT_CHAT_DETAIL, chatScreenRowsOf } from '../../transcript/deliverChatPrompt';
+import { UNKNOWN_CELL } from '../../sessionTextReplay';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -572,6 +574,16 @@ describe('send', () => {
     expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'hi', requestId: msgId() }))
       .toEqual({ result: 'blocked', effect: 'none', replayed: false });
     expect(await f.bridge.send(phoneSend())).toMatchObject({ result: 'blocked', error: 'chat-blocked', blockedBy: 'terminal', effect: 'none' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('desktop and phone: a composer the screen read could not see whole is reported as unseen, not as a draft', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.agent.agentStatus = 'idle';
+    f.state.screen = chatScreenRowsOf(['● done', '─'.repeat(40), `❯\u00a0${UNKNOWN_CELL.repeat(8)}`, '─'.repeat(40)].map((text) => ({ text }))) as string[];
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'hi', requestId: msgId() }))
+      .toMatchObject({ result: 'unconfirmed', effect: 'none', reason: 'input-unseen' });
+    expect(await f.bridge.send(phoneSend())).toMatchObject({ result: 'unconfirmed', effect: 'none', detail: UNSEEN_INPUT_CHAT_DETAIL });
     expect(f.written).toEqual([]);
   });
 

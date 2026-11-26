@@ -22,6 +22,7 @@ export const PANE_CLAUDE_REWIND_KEY = 'claude-rewind';
 const REFUSAL_KEYS: Record<Exclude<ClaudeRewindResult, 'opened'>, string> = {
   busy: 'pane.rewindBusy',
   draft: 'pane.rewindDraft',
+  unseen: 'pane.rewindUnseen',
   blocked: 'pane.rewindBlocked',
   retry: 'pane.rewindRetry',
   unavailable: 'pane.rewindUnavailable',

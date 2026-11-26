@@ -15,6 +15,9 @@ export interface PtyCreateOptions {
   cwd?: string;
   /** A WSL pane's distribution (main validates it; see pty.handler). */
   wslDistro?: string;
+  /** Run as the live WSL pane with this pty id runs (its distro and user):
+   *  a conversation continued from it on a token account. Main resolves it. */
+  wslFrom?: string;
   /** Known-dead session cwd candidates. Main validates them in order and
    * falls back to home; ordinary blank-surface creates leave this absent. */
   recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;

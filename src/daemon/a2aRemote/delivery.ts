@@ -19,6 +19,7 @@ import {
   A2A_REMOTE_PROMPT_ID_RE,
   A2A_REMOTE_PROTOCOL,
   ANSWER_OUTCOMES_MAX,
+  REMOTE_TASK_UNDELIVERED_EVENT,
   parseA2aRemoteImageRefs,
   type A2aApprovalSendResult,
   type A2aLinkRecordV1,
@@ -58,6 +59,7 @@ import { addressPromoter } from './remoteHostStore';
 import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet, type StreamedPut } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
+import { UndeliveredAlertStore, dueUndeliveredAlerts, type UndeliveredAlert } from './undeliveredAlert';
 import { ApprovalPacer, checkApprovalOffer } from './approvalAsk';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
 
@@ -152,6 +154,8 @@ export interface A2aRemoteDeliveryDeps {
 
 const SYNC_MS = 5_000;
 const MAINTENANCE_MS = 60_000;
+/** How often tasks sent with no delivered receipt are checked (undeliveredAlert.ts): the alert lands within this of its time. */
+const UNDELIVERED_CHECK_MS = 15_000;
 /** How often `drain` looks whether the peers took what it waits for. */
 const DRAIN_POLL_MS = 50;
 const HELD_REASONS: ReadonlySet<string> = new Set<A2aRemoteHeldReason>([
@@ -264,6 +268,9 @@ export class A2aRemoteDelivery {
   private readonly served = new Map<HostId, A2aRemoteHostStatus['state']>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+  private undeliveredTimer: ReturnType<typeof setInterval> | null = null;
+  /** Tasks this PC sent that were already alerted as not delivered (kept across restarts). */
+  private readonly undelivered: UndeliveredAlertStore;
   /** `EXIT_AFTER_REFUSE_ENV` (test only). */
   private readonly exitAfterRefuse = process.env[EXIT_AFTER_REFUSE_ENV] === '1';
   /** Refused records (`<hostId>#<seq>`) whose effect `onRefused` is applying now: the replay leaves them to it. */
@@ -280,6 +287,7 @@ export class A2aRemoteDelivery {
     this.deps = deps;
     this.outbox = new OutboxStore({ dir: deps.dir, log: deps.log, onEnqueue: (rec) => this.onEnqueue(rec), onAck: (recs) => this.onAck(recs) });
     this.peerFeatureStore = new PeerFeatureStore({ dir: deps.dir, log: deps.log });
+    this.undelivered = new UndeliveredAlertStore({ dir: deps.dir, log: deps.log });
     this.images = deps.uploadsRoot ? new A2aImageStore({ a2aDir: deps.dir, uploadsRoot: deps.uploadsRoot, log: deps.log }) : null;
     // `images.1` is a promise to take images: only with somewhere to keep them.
     // `reopen.1` is this build's own way of following a task again; a test may play a build without it.
@@ -455,14 +463,18 @@ export class A2aRemoteDelivery {
     this.syncTimer.unref?.();
     this.maintenanceTimer = setInterval(() => void this.maintain(), MAINTENANCE_MS);
     this.maintenanceTimer.unref?.();
+    this.undeliveredTimer = setInterval(() => this.alertUndelivered(), UNDELIVERED_CHECK_MS);
+    this.undeliveredTimer.unref?.();
     void this.maintain();
   }
 
   async stop(): Promise<void> {
     if (this.syncTimer) clearInterval(this.syncTimer);
     if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+    if (this.undeliveredTimer) clearInterval(this.undeliveredTimer);
     this.syncTimer = null;
     this.maintenanceTimer = null;
+    this.undeliveredTimer = null;
     this.hub.closeAll();
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
@@ -629,6 +641,35 @@ export class A2aRemoteDelivery {
   }
 
   /** Every record still owed to any host. */
+  /**
+   * Tasks this PC sent that have no delivered receipt REMOTE_UNDELIVERED_ALERT_MS after they were made: the
+   * sender is told once (REMOTE_TASK_UNDELIVERED_EVENT, a notification on its pane) and the log says it, with the
+   * link's state (undeliveredAlert.ts). Never throws.
+   */
+  alertUndelivered(now: number = Date.now()): UndeliveredAlert[] {
+    try {
+      const open = this.deps.taskService.listRemote().filter((t) => !(TERMINAL_STATES as readonly string[]).includes(t.status.state));
+      const due = dueUndeliveredAlerts(open, this.undelivered.alerted, {
+        // Its own envelope no longer owed: the other PC took it (a remote start's first task went as the request).
+        received: (_task, marker) => !this.outbox.pending(marker.hostId).some((r) => r.envelope.kind === 'task' && r.envelope.messageId === marker.messageId),
+        linkState: (linkId) => this.deps.links.get(linkId)?.state ?? 'unknown',
+        connected: (hostId) => this.hub.isConnected(hostId) || this.sessions.get(hostId)?.session.current().state === 'connected',
+        hasStatus: (taskId) => this.remoteStatuses.has(taskId),
+        hostName: (hostId) => this.hostName(hostId),
+      }, now);
+      // Recorded before it is said: a write that fails still says it once in this run.
+      this.undelivered.update(due.map((a) => a.taskId), new Set(open.map((t) => t.id)));
+      for (const alert of due) {
+        this.deps.log('warn', `[a2a-remote] task ${alert.taskId} to ${alert.hostId}: ${alert.text}`);
+        this.deps.broadcast({ type: REMOTE_TASK_UNDELIVERED_EVENT, sessionId: alert.ptyId ?? '', data: { taskId: alert.taskId, ...(alert.ptyId ? { ptyId: alert.ptyId } : {}), text: alert.text } });
+      }
+      return due;
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] the undelivered check failed: ${errMsg(err)}`);
+      return [];
+    }
+  }
+
   private openRecords(): A2aOutboxRecordV1[] {
     const hosts = new Set<HostId>([...this.deps.remoteHosts.list().map((h) => h.hostId), ...this.deps.peers.list().map((p) => p.hostId)]);
     return [...hosts].flatMap((h) => this.outbox.pending(h));

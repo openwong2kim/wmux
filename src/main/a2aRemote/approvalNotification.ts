@@ -2,13 +2,15 @@
 // "<PC> allowed|denied <tool> in <pane>". The daemon sends the line already
 // made (REMOTE_APPROVAL_DONE_EVENT, daemon/a2aRemote/approvalNotice.ts) and
 // never a command; this reads only that line, the decision and the pane to
-// jump to.
+// jump to. The same listener shows a task this PC sent that has no delivered
+// receipt in time (REMOTE_TASK_UNDELIVERED_EVENT, daemon/a2aRemote/undeliveredAlert.ts),
+// on the sending pane.
 
 import type { BrowserWindow } from 'electron';
 import type { NotificationPayload } from '../notification/sendNotification';
 import { dispatchNotification } from '../notification/dispatchNotification';
 import type { DaemonClient } from '../DaemonClient';
-import { REMOTE_APPROVAL_DONE_EVENT } from '../../shared/a2aRemote';
+import { REMOTE_APPROVAL_DONE_EVENT, REMOTE_TASK_UNDELIVERED_EVENT } from '../../shared/a2aRemote';
 
 const PTY_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const TEXT_MAX = 300;
@@ -32,11 +34,29 @@ export function remoteApprovalNotification(data: unknown): { ptyId: string | nul
   };
 }
 
+/** The notification for a task sent to another PC with no delivered receipt yet; null when the data is not one. */
+export function remoteUndeliveredNotification(data: unknown): { ptyId: string | null; payload: NotificationPayload } | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const d = data as Record<string, unknown>;
+  if (typeof d['text'] !== 'string' || d['text'].length === 0 || d['text'].length > TEXT_MAX) return null;
+  const ptyId = typeof d['ptyId'] === 'string' && PTY_ID_RE.test(d['ptyId']) ? d['ptyId'] : null;
+  return {
+    ptyId,
+    payload: {
+      type: 'warning',
+      title: d['text'],
+      body: 'A task this pane sent to another PC has not reached its agent. It stays queued; check that PC.',
+      category: 'system',
+    },
+  };
+}
+
 export function registerRemoteApprovalNotifications(daemonClient: DaemonClient | undefined, getWindow: () => BrowserWindow | null): () => void {
   if (!daemonClient) return () => undefined;
   const onEvent = (event: { type?: unknown; data?: unknown }): void => {
-    if (event.type !== REMOTE_APPROVAL_DONE_EVENT) return;
-    const shown = remoteApprovalNotification(event.data);
+    const shown = event.type === REMOTE_APPROVAL_DONE_EVENT ? remoteApprovalNotification(event.data)
+      : event.type === REMOTE_TASK_UNDELIVERED_EVENT ? remoteUndeliveredNotification(event.data)
+        : null;
     if (shown) dispatchNotification(getWindow(), shown.ptyId, shown.payload, { ptyId: shown.ptyId });
   };
   daemonClient.on('event', onEvent);

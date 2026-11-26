@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { A2aLinkRecordV1, HostId } from '../../../shared/a2aRemote';
-import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
+import type { A2aSpawnClaimResult, A2aSpawnClaimV1, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
 import { toolRuleCovers, workerLaunchFlags } from '../../../shared/workerLaunch';
-import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
+import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
 import { clearFanoutPortReservationsForTest } from '../../../main/worktask/fanoutEnvironment';
 import { pickHeadlessTaskPort } from '../headlessTaskPort';
@@ -30,6 +30,8 @@ let startedResult: A2aSpawnStepResult;
 let request: Partial<SpawnRequestRecordV1> | undefined;
 let link: A2aLinkRecordV1 | undefined;
 let calls: string[];
+let treeInputs: SpawnWorktreeInput[];
+let startedNotes: (string | undefined)[];
 let created: HeadlessSessionInput[];
 let live: Set<string>;
 let failed: string[];
@@ -86,8 +88,9 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
         if (claimResult.ok) request = { state: 'starting' };
         return claimResult;
       },
-      started: async (_h, _s, end) => {
+      started: async (_h, _s, end, baseNote) => {
         calls.push(`started:${end.workspaceId}:${end.paneId}`);
+        startedNotes.push(baseNote);
         if (startedResult.ok) request = { state: 'decided', code: 'started', linkId: LINK };
         return startedResult;
       },
@@ -102,8 +105,9 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
     starts,
     sessions: () => sessionPort,
     worktrees: {
-      create: async () => {
+      create: async (input) => {
         calls.push('worktree');
+        treeInputs.push(input);
         return worktree;
       },
       remove: async (input) => void removedTrees.push(input.spawnId),
@@ -131,12 +135,14 @@ beforeEach(() => {
   request = { state: 'approved' };
   link = { linkId: LINK, state: 'active' } as A2aLinkRecordV1;
   calls = [];
+  treeInputs = [];
+  startedNotes = [];
   created = [];
   live = new Set();
   failed = [];
   gone = [];
   removedTrees = [];
-  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${TREE}` };
+  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${TREE}`, base: 'a'.repeat(40) };
   sessionPort = makeSessions();
   createThrows = false;
   agentBin = '/home/u/.local/bin/claude';
@@ -153,6 +159,14 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('headless start', () => {
+  it('makes the worktree from the base the asker named, and hands the worktree\'s base note to the answer', async () => {
+    claimResult = { ok: true, claim: { ...(claimResult as { claim: A2aSpawnClaimV1 }).claim, base: 'release/2.0' } };
+    worktree = { ...worktree, baseNote: 'git fetch origin release/2.0 failed (offline); branched from HEAD' } as SpawnWorktreeResult;
+    await makeStarter().start(HOST, SPAWN);
+    expect(treeInputs[0]).toMatchObject({ repoPath: '/repo', sub: 'apps', base: 'release/2.0' });
+    expect(startedNotes).toEqual(['git fetch origin release/2.0 failed (offline); branched from HEAD']);
+  });
+
   it('claims, records, makes the worktree and the session, then reports the session it made', async () => {
     await makeStarter().start(HOST, SPAWN);
     expect(calls).toEqual(['claim', 'worktree', 'create', `started:hl-${TREE.slice(3)}:${starts.get(HOST, SPAWN)?.sessionId}`]);
@@ -741,7 +755,7 @@ describe('headless start: task port', () => {
     // Recorded before the agent started, and kept across a reload of the file.
     expect(new HeadlessStartStore({ dir, scheduleHarden: () => undefined }).get(HOST, SPAWN)?.taskPort).toBe(4000);
     request = { state: 'approved' };
-    worktree = { ok: true, worktreePath: '/wt/remote-y', cwd: '/wt/remote-y', branch: `wmux/remote/${headlessTreeId(HOST, SPAWN2)}` };
+    worktree = { ok: true, worktreePath: '/wt/remote-y', cwd: '/wt/remote-y', branch: `wmux/remote/${headlessTreeId(HOST, SPAWN2)}`, base: 'a'.repeat(40) };
     await makeStarter({ taskPort }).start(HOST, SPAWN2);
     expect(asked[1]).toEqual([4000]);
     expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4001' });
@@ -765,7 +779,7 @@ describe('headless start: task port', () => {
     const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-port-wt-'));
     try {
       fs.writeFileSync(path.join(wtDir, 'wmux.json'), JSON.stringify({ fanout: { portRange: '4300-4301' } }));
-      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}` };
+      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}`, base: 'a'.repeat(40) };
       const taskPort = (w: string, taken: ReadonlySet<number>) => pickHeadlessTaskPort(w, taken, async () => true);
       await makeStarter({ taskPort }).start(HOST, SPAWN);
       expect(starts.get(HOST, SPAWN)?.taskPort).toBe(4300);

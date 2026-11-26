@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { agentLauncherStem, agentRow } from '../../shared/agentIdentity';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
+import { workerAutoUpdateEnv } from '../worktask/fanoutEnvironment';
 import {
   A2A_CONTINUE_EVENT,
   A2A_CONTINUE_RPC,
@@ -278,7 +279,7 @@ export class ContinueStarter {
       if (!command) return await undo('failed', 'the placed transcript\'s path cannot be typed');
       // The worktree is a folder nobody opened here: without the first-run env
       // Claude Code stops on its folder-trust prompt, as a fan-out worker would.
-      const paneEnv = firstRunEnvForAgent(launcher);
+      const paneEnv = { ...workerAutoUpdateEnv(), ...firstRunEnvForAgent(launcher) };
       // A start that spans a reconnect opens no pane only to close it.
       if (this.stopped) return await undo('failed', 'wmux reconnected to its background service meanwhile');
       let opened: unknown;

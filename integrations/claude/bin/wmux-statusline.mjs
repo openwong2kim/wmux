@@ -42,9 +42,9 @@
 // from settings.json, so no TS imports and no wmux install-dir dependency
 // (installed to the stable ~/.wmux/hooks/ path by `wmux setup-statusline`).
 
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, resolve, win32 } from 'node:path';
 import { createConnection } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -58,12 +58,46 @@ const PUSH_RETRY_MS = 60_000;
 const PUSH_RESEND_MS = 10 * 60_000;
 /** Env var carrying the payload from the statusline process to the push child. */
 const PUSH_PAYLOAD_ENV = 'WMUX_STATUSLINE_PUSH';
+/** A pane's push state untouched this long is a closed pane's: pruned. */
+const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+/** Pruning runs at most this often (a marker file's mtime), in the push child only. */
+const PRUNE_EVERY_MS = 60 * 60_000;
+const PRUNE_MARKER = '.pruned';
 // #1111: the envelope-less `legacy` grandfather closes in the first release on
 // or after 2026-09-30. `usage.rateLimits` on the MAIN pipe is `wmux.internal`,
 // so no declaration can ever grant it; the enforcer instead recognises this
 // exact clientName and allows that ONE method (src/main/mcp/statuslinePush.ts).
 // Keep it in lockstep with WMUX_STATUSLINE_CLIENT_NAME in src/shared/rpc.ts.
 const WMUX_CLIENT_NAME = 'wmux-statusline';
+
+/**
+ * A WSL pane runs this as Windows node over interop (statusline.sh, see
+ * src/shared/wslIntegration.ts), so the pipe, token and state paths below are
+ * the Windows ones. Its CLAUDE_CONFIG_DIR is a Linux path in the distro; it
+ * arrives as `d:<dir>` (or `none` when unset) in this variable and is reported
+ * exactly as given, so main can tell it is the pane's own account home.
+ * undefined: not a WSL pane's statusline.
+ */
+function wslConfigDir() {
+  const v = process.env.WMUX_STATUSLINE_CONFIG_DIR;
+  if (typeof v !== 'string' || v.length === 0) return undefined;
+  if (v.startsWith('d:/') && !v.includes('\0')) return { dir: v.slice(2) };
+  // `none`, or anything but an absolute dir (a relative CLAUDE_CONFIG_DIR):
+  // no account home, and never the Windows side's folder.
+  return { dir: null };
+}
+
+/** The account a WSL home is: `claude-<16 hex>`, the SHA-256 of the account
+ *  folder as Windows compares it (shared/wslAccountHome.ts). */
+function wslHomeAccount(accounts, dir) {
+  const m = /\/claude-([0-9a-f]{16})$/.exec(dir ?? '');
+  if (!m) return undefined;
+  return accounts.find((a) => {
+    if (!a || a.vendor !== 'claude' || typeof a.configDir !== 'string') return false;
+    const canonical = win32.normalize(a.configDir.trim()).replace(/[\\/]+$/, '').toLowerCase();
+    return createHash('sha256').update(canonical).digest('hex').slice(0, 16) === m[1];
+  });
+}
 
 function getHome() {
   return process.env.USERPROFILE || process.env.HOME || homedir();
@@ -94,11 +128,12 @@ function readJsonFile(path) {
   }
 }
 
-/** Registered account name for this config dir, from wmux accounts.json. */
-function lookupAccountName(home, want) {
+/** Registered account name for this config dir, from wmux accounts.json
+ *  (for a WSL pane, the account its home in the distro is). */
+function lookupAccountName(home, want, wslDir) {
   const parsed = readJsonFile(join(home, '.wmux', 'accounts.json'));
   const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
-  const hit = accounts.find(
+  const hit = wslDir !== undefined ? wslHomeAccount(accounts, wslDir) : accounts.find(
     (a) => a && a.vendor === 'claude' && typeof a.configDir === 'string' && normDir(a.configDir) === want,
   );
   return typeof hit?.name === 'string' && hit.name.length > 0 ? hit.name : null;
@@ -130,12 +165,14 @@ function main() {
   const input = readStdinJson();
   const home = getHome();
 
-  const rawConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const wsl = wslConfigDir();
+  const rawConfigDir = wsl ? wsl.dir : process.env.CLAUDE_CONFIG_DIR;
   const configDir = typeof rawConfigDir === 'string' && rawConfigDir.length > 0
     ? rawConfigDir
     : join(home, '.claude');
   const want = normDir(configDir);
-  const isDefaultDir = want === normDir(join(home, '.claude'));
+  // A WSL pane's files are the distro's: its default is the distro's own ~/.claude.
+  const isDefaultDir = wsl ? wsl.dir === null : want === normDir(join(home, '.claude'));
 
   const parts = [];
 
@@ -159,8 +196,8 @@ function main() {
 
   // Account label: registered wmux name > logged-in email local part >
   // 'default' for ~/.claude > dir basename.
-  const name = lookupAccountName(home, want)
-    ?? lookupLoginEmail(home, configDir, isDefaultDir)
+  const name = lookupAccountName(home, want, wsl ? wsl.dir : undefined)
+    ?? (wsl ? null : lookupLoginEmail(home, configDir, isDefaultDir))
     ?? (isDefaultDir ? 'default' : basename(configDir));
   parts.push(name);
 
@@ -220,7 +257,9 @@ function main() {
   process.stdout.write(parts.join(' · '), () => {
     if (!sample) return;
     try {
-      spawnPush(home, typeof rawConfigDir === 'string' && rawConfigDir.length > 0 ? resolve(rawConfigDir) : null, sample);
+      // A WSL pane's Linux dir goes as is: resolving it on Windows would make it a C:\\ path.
+      const pushDir = typeof rawConfigDir === 'string' && rawConfigDir.length > 0 ? (wsl ? rawConfigDir : resolve(rawConfigDir)) : null;
+      spawnPush(home, pushDir, sample);
     } catch {
       // never let the push affect the statusline
     }
@@ -265,8 +304,10 @@ function stateDir(home) {
   return join(home, `.wmux${dataSuffix()}`, 'statusline-push');
 }
 
+// Per pane too: two panes on one config dir each push their own first sample
+// (main keeps a pane's own window, paneUsageLimits.ts).
 function statePathFor(home, pipes, configDir) {
-  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}`).digest('hex').slice(0, 16);
+  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}\0${process.env.WMUX_PTY_ID || ''}`).digest('hex').slice(0, 16);
   return join(stateDir(home), `${key}.json`);
 }
 
@@ -342,6 +383,28 @@ async function runPush() {
     break; // reached something — never double-send
   }
   writeState(home, statePathFor(home, pipes, configDir), { sig, ok: accepted, at: Date.now() });
+  pruneStates(home, Date.now());
+}
+
+/** The state is kept per pane, so closed panes leave files behind: remove the
+ *  ones untouched for STATE_MAX_AGE_MS, at most once per PRUNE_EVERY_MS. */
+function pruneStates(home, now) {
+  const dir = stateDir(home);
+  const marker = join(dir, PRUNE_MARKER);
+  try {
+    if (now - statSync(marker).mtimeMs < PRUNE_EVERY_MS) return;
+  } catch { /* never pruned here */ }
+  try {
+    writeFileSync(marker, '', { mode: 0o600 });
+    utimesSync(marker, now / 1000, now / 1000);
+    for (const name of readdirSync(dir)) {
+      if (name === PRUNE_MARKER || !(name.endsWith('.json') || name.endsWith('.tmp'))) continue;
+      const file = join(dir, name);
+      try {
+        if (now - statSync(file).mtimeMs > STATE_MAX_AGE_MS) unlinkSync(file);
+      } catch { /* gone meanwhile */ }
+    }
+  } catch { /* no state dir: nothing to prune */ }
 }
 
 /** One request over one pipe. Resolves the parsed response carrying our id,

@@ -34,9 +34,39 @@ Local changes:
   every added row moves the cursor down one row while there is room below,
   dropping the bottom row; the rest goes to history, kept past the cap by the
   rows dropped. With history, the cursor row stays. The saved cursor moves down
-  with the room used. `native_core.rs` refuses a narrowing that reflows a
-  paragraph below the cursor's, where xterm moves its cursor row off its
-  content.
+  with the room used.
+- `src/grid/resize.rs` `narrowing_plan` (read by `shrink_columns` before its
+  reflow): which paragraphs xterm leaves unreflowed. xterm walks them from the
+  bottom and skips the one its cursor row is in when it gets there, but every
+  row a lower paragraph adds has moved that row down first (`Buffer.ts`
+  `_reflowSmaller`, the `absoluteY` check and the viewport adjustment, lines
+  369-490 in 6.1.0-beta.336). So it can skip a paragraph below the cursor's
+  and reflow the cursor's own; this grid now does the same, and the cursor
+  keeps its column through such a reflow. `new_row_count` is xterm's
+  `reflowSmallerGetNewLineLengths` count. Added 2026-11-25.
+- `src/grid/row.rs` `Row::shrink` and `resize.rs` `trimmed_length`: the cells
+  an erase left at a row's edge (`empty_from`) carry no content for xterm,
+  whatever their background (`getTrimmedLength` tests content), so a narrowing
+  cuts them instead of wrapping them onto a new row, and the plan does not
+  count them. Before, a row erased with a background color (`CSI 2 K` after
+  `SGR 42`) reflowed at its full width. `src/term/mod.rs` `line_down` drops a
+  row's wrap flag through `Row::take_wrap`, so a line feed no longer counts
+  the whole row as written and loses that empty run (an erased row was then
+  replayed as printed blanks). `Row::append_front` moves the empty run right
+  with the cells put in front instead of dropping it, so the erase on a
+  wrapped paragraph's last row is still cut after the reflow carries the
+  paragraph's cells into that row. And as xterm's `_reflowSmaller` nulls the
+  cell right after a reflowed line's content ("Null out the end of the line
+  ends"), `shrink_columns` puts a default cell there on a reflowed
+  paragraph's last row (`Row::null_at`, not counted as written), so it loses
+  the background an erase left. Added 2026-11-25.
+- `src/grid/mod.rs` `narrowing_clipped`, set by `shrink_columns` and reset by
+  every `Grid::resize`: with no history, xterm drops the buffer's last rows
+  before it inserts any new row (`lines.pop()`), so where one belongs to a
+  paragraph it reflowed, it keeps that paragraph's new rows and loses its
+  first ones; this grid keeps the first. `native_core.rs` refuses such a
+  narrowing. It replaces the refusal of every narrowing that reflowed a
+  paragraph below the cursor's. Added 2026-11-25.
 - `src/grid/mod.rs` `narrowing_added`, set by `shrink_columns` and reset by
   every `Grid::resize`: the rows a narrowing's reflow added. xterm moves its
   absolute saved row down by every added row, also those trimmed at the cap

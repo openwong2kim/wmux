@@ -130,8 +130,8 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
-import { wslShareToLinux } from '../../../shared/wslPaths';
+import { defaultTaskPaneShell, heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, pickPoolTask, poolAllHeld, poolCandidates, poolClaudeAccounts, poolFallsBackToCaller, poolHeldInPlace, poolTaskCallerLine, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { getWslAccountState, type WslAccountState, type WslPlace } from '../../account/wslAccountState';
 import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { getAccountStore } from '../../account/accountStore';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
@@ -200,6 +200,9 @@ const APPROVAL_TIMEOUT_MS = 45_000;
 /** How long a bot's new fan-out waits for a fresh read of its workers' panes
  *  before the caps are checked on what is already known (#2255). */
 const LIVENESS_WAIT_MS = 2_000;
+/** The extra wait for a WSL start place still being read from a slow daemon
+ *  (fan-outs whose task panes start WSL only). */
+const START_PLACE_WAIT_MS = 8_000;
 
 /** Resolves when `work` settles or after `ms`, whichever is first. */
 async function withinMs(work: Promise<unknown> | undefined, ms: number): Promise<void> {
@@ -721,6 +724,23 @@ export interface FanOutRpcDeps {
   preparePool?: (callerWorkspaceId: string) => Promise<PreparedPool | null>;
   /** The pool's pick for one worker (default: fanoutAccountPool.ts pickFromPool). */
   pickFromPool?: typeof pickFromPool;
+  /** Where a plain WSL pane asking for a distro starts (default:
+   *  main/account/wslAccountState.ts defaultPlace): a WSL-share task's place. */
+  wslDefaultPlace?: (distro: string | null) => WslPlace | undefined;
+  /** Whether a task pane with no shell of its own starts WSL (the Settings
+   *  default shell, mirrored to main) and the distro it asks for (default:
+   *  main/pty/defaultShellMirror.ts, defaultWslDistro.ts). A prediction:
+   *  the pane's create checks the shell it really got. */
+  taskPaneShell?: () => { wsl: boolean; distro: string | null };
+  /** The WSL homes' sign-in and readings (default: main/account/wslAccountState.ts). */
+  wslState?: Pick<WslAccountState, 'get' | 'reading'>;
+  /** Learn where a distro starts, and which homes run a live claude, from
+   *  the daemon's sessions after a restart (default: wslAccountState.ts
+   *  learnFromLiveSessions). */
+  learnWslStartPlaces?: (sessions: unknown[]) => void;
+  /** Whether the daemon's sessions are still to be read for that (default:
+   *  wslAccountState.ts liveSessionsPending). */
+  wslStartPlacesPending?: () => boolean;
   /** The usage key a workspace's Claude launches run on, an account id or
    *  'default' (default: its bound Claude account), and the open workers on
    *  a key (default: fanoutAccountPool.ts openWorkersOn): a pool fallback
@@ -1510,16 +1530,50 @@ export function registerFanOutRpc(
       ).finally(() => { if (seq === poolReadSeq) poolSettled = true; });
       return poolRead;
     };
+    // Where a task pane will run, predicted from main's mirrors before it
+    // exists, read again at each use (a setting pushed after boot counts): a
+    // WSL default shell starts every task pane WSL on its Windows worktree,
+    // in the chosen distro as whoever a plain pane there starts as.
+    const wslDefaultPlace = deps.wslDefaultPlace ?? ((d: string | null) => getWslAccountState().defaultPlace(d));
+    const paneShellNow = (): { wsl: boolean; distro: string | null } => (deps.taskPaneShell ?? (() => defaultTaskPaneShell(deps.platform ?? process.platform)))();
+    // Task panes that start WSL, in a distro whose start place this run has
+    // not seen yet (after a restart; the unnamed default's is never kept): a
+    // plain pane that survived by reattach says where it starts. Read with
+    // the pool, before the reserve gate and the claim, so nothing is awaited
+    // between them.
+    // Read whatever the default shell says now: it may be pushed after this
+    // fan-out began, and the pick reads it again.
+    const learnStartPlaces = async (): Promise<void> => {
+      if (!(deps.wslStartPlacesPending ?? (() => getWslAccountState().liveSessionsPending()))()) return;
+      try {
+        const sessions = await daemonRpc('daemon.listSessions', {});
+        if (Array.isArray(sessions)) (deps.learnWslStartPlaces ?? ((s: unknown[]) => getWslAccountState().learnFromLiveSessions(s as Array<Record<string, unknown>>, poolClaudeAccounts())))(sessions);
+      } catch { /* not known: such a task runs on the caller's account */ }
+    };
+    let learning: Promise<void> | null = null;
+    let learned = false;
     if (!keyKnown && !depthRefusal) {
+      learning = learnStartPlaces().finally(() => { learned = true; });
       try {
         await Promise.all([
           withinMs(refreshPool(), LIVENESS_WAIT_MS),
+          withinMs(learning, LIVENESS_WAIT_MS),
           bot ? withinMs((deps.bot ?? defaultBotPort)()?.refreshLiveness?.(), LIVENESS_WAIT_MS) : undefined,
           refreshDormantTaskWorkspaces(LIVENESS_WAIT_MS),
           bot ? withinMs(readVerifyGate(), LIVENESS_WAIT_MS) : undefined,
         ]);
       } catch {
         /* the caps count what is known */
+      }
+      // A slow daemon (a reattach burst) may still be answering: when task
+      // panes start WSL and no usable home is known at their place yet (the
+      // place itself, or a home whose pane survived the restart), wait for it
+      // once more, so the reserve check below does not decide without it.
+      const shell = paneShellNow();
+      const place = shell.wsl ? wslDefaultPlace(shell.distro) : undefined;
+      const usableHome = !!place && !!pool && poolCandidates(pool, { place, ...(deps.wslState ? { wslState: deps.wslState } : {}) }).some((c) => c.verdict.usable);
+      if (learning && !learned && shell.wsl && !usableHome) {
+        await withinMs(learning, START_PLACE_WAIT_MS);
       }
     }
 
@@ -2034,11 +2088,29 @@ export function registerFanOutRpc(
     // when it holds every one of them, and each launch checks the account
     // picked for it. Read again right before each launch (accountPick).
     const holdForAccount = deps.usageReserveHoldForAccount ?? usageReserveHoldForAccount;
+
+    // The tasks run in folders under the wmux data dir (worktrees, output
+    // and research folders), Windows ones even for a repository on a WSL
+    // share: the whole fan-out is decided on the pool's Windows members, as
+    // each task's own pick is. A task whose own folder is a WSL share is
+    // left to its pick (accountPick), which runs it on its home there or on
+    // the caller's account.
     const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null => {
       if (!agents.some(spendsUsageReserve)) return null;
+      // Task panes that start WSL (the default shell) run on the pool
+      // accounts' homes at their place: held when every usable home there
+      // is. With no usable home there, or no place known, they run on the
+      // caller's account (below).
+      const paneShell = paneShellNow();
+      if (pool && paneShell.wsl) {
+        const place = wslDefaultPlace(paneShell.distro);
+        if (place && poolCandidates(pool, { place, holdFor: holdForAccount, ...(deps.wslState ? { wslState: deps.wslState } : {}) }).some((c) => c.verdict.usable)) {
+          return poolHeldInPlace(pool, place, { holdFor: holdForAccount, ...(deps.wslState ? { wslState: deps.wslState } : {}) });
+        }
+      }
       // A pool with no account that can run a worker sends them to the
       // caller's account, checked on its own hold (as with the pool off).
-      if (pool && !poolFallsBackToCaller((deps.pickFromPool ?? pickFromPool)(pool))) return poolAllHeld(pool, holdForAccount);
+      if (pool && !paneShell.wsl && !poolFallsBackToCaller((deps.pickFromPool ?? pickFromPool)(pool))) return poolAllHeld(pool, holdForAccount);
       return (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId);
     };
     /** Hold a bot's request for the reserve (once), and say why nothing started. */
@@ -2140,6 +2212,7 @@ export function registerFanOutRpc(
       return deny(preflight.code, preflight.message);
     }
     const callerRepoRoot = preflight.root;
+
     // A bot's workers may not push to this repository's own default branch:
     // read it before they launch (main and master are covered regardless).
     // A research task has no repository.
@@ -2372,19 +2445,21 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
-        // Tasks the pool left out (their folder starts a WSL pane, or no pool
-        // account can run them): they run on the caller's account, as
-        // without the pool.
+        // Tasks the pool left out (their folder starts a WSL pane it knows no
+        // account home for, or no pool account can run them): they run on
+        // the caller's account, as without the pool.
         const callerTasks = new Set<number>();
         // Of those, the ones the pool sent there because none of its accounts
         // can run them: the owner is told once, when one actually launches.
         const fallbackTasks = new Set<number>();
-        const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
+        const reserveAtTaskLaunch = (index: number | undefined, accountId?: string, wslPlace?: WslPlace): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
           const spends = agents.some(spendsUsageReserve);
-          // A pool worker: the account picked for it, not the caller's.
+          // A pool worker: the account picked for it (its WSL home's key in a
+          // WSL pane), not the caller's.
+          const poolKey = accountId !== undefined ? poolUsageKey(accountId, wslPlace) : null;
           const hold = accountId !== undefined
-            ? (spends ? holdForAccount(accountId) : null)
+            ? (spends && poolKey ? holdForAccount(poolKey) : null)
             : index !== undefined && callerTasks.has(index)
               ? (spends ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null)
               : reserveHoldOf(agents);
@@ -2398,20 +2473,32 @@ export function registerFanOutRpc(
           prepare: async (task: { index: number }) => {
             if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
           },
-          pick: (task: { index: number; cwd?: string }): { accountId: string } | { callerAccount: string } | { refusal: string } | null => {
+          pick: (task: { index: number; cwd?: string }): { accountId: string; wslPlace?: WslPlace } | { callerAccount: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
-            // A task folder on a WSL share starts a WSL pane, which the pool
-            // keeps out of: its launch checks the caller's account as before.
-            if (task.cwd && wslShareToLinux(task.cwd)) {
-              callerTasks.add(task.index);
-              return null;
-            }
-            const picked = pick(current);
+            // Where its pane runs and the pool's answer (pickPoolTask, shared
+            // with the GUI's fan-outs).
+            const decided = pickPoolTask(current, task, {
+              paneShell: paneShellNow,
+              defaultPlace: wslDefaultPlace,
+              pick,
+              ...(deps.wslState ? { wslState: deps.wslState } : {}),
+            });
             // A pick of its own decides again each time (a dependent's or a retry's).
             callerTasks.delete(task.index);
             fallbackTasks.delete(task.index);
-            if (picked.kind === 'pick') return { accountId: picked.accountId };
+            if (decided.kind === 'pick') return { accountId: decided.accountId, ...(decided.wslPlace ? { wslPlace: decided.wslPlace } : {}) };
+            // A WSL pane with no usable home there, or no start place known:
+            // the caller's account, as before the pool took WSL panes in,
+            // said once when one launches (and why, in the log).
+            if (decided.kind === 'wsl-caller') {
+              console.log(poolTaskCallerLine(task.index, decided));
+              callerTasks.add(task.index);
+              fallbackTasks.add(task.index);
+              return null;
+            }
+            const picked = decided.pick;
+            const wslPlace = decided.wslPlace;
             // No pool account can run it at all (none eligible): the
             // caller's account, as with the pool off, said once. The
             // per-account worker limit the owner set still holds there: such
@@ -2429,8 +2516,10 @@ export function registerFanOutRpc(
             // Every usable account is in the reserve: held as the reserve
             // holds a fan-out without the pool (a bot's request is kept).
             if (picked.reason === 'held') {
-              const hold = poolAllHeld(current, holdForAccount)
-                ?? (picked.availableAtMs !== null ? { account: current.members[0]?.id ?? 'default', untilMs: picked.availableAtMs } : null);
+              // A WSL pick's hold is its held home's that ends first, named by
+              // that home's key (the owner is told of the account in WSL).
+              const hold = (wslPlace ? poolHeldInPlace(current, wslPlace, { holdFor: holdForAccount, ...(deps.wslState ? { wslState: deps.wslState } : {}) }) : poolAllHeld(current, holdForAccount))
+                ?? (picked.availableAtMs !== null ? { account: (wslPlace ? heldHomeKey(current, wslPlace, { ...(deps.wslState ? { wslState: deps.wslState } : {}) }) : current.members[0]?.id) ?? 'default', untilMs: picked.availableAtMs } : null);
               if (hold) return { refusal: reserveRefusal(hold, !launchPassed) };
             }
             return { refusal: poolRefusalText(picked, Date.now()) };
@@ -2527,7 +2616,7 @@ export function registerFanOutRpc(
             accountPick,
             mayLaunch: (task) => {
               const firstPass = !launchPassed;
-              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
+              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId, task?.wslPlace);
               if (!refusal) launchPassed = true;
               if (!refusal && task && fallbackTasks.has(task.index)) notePoolCallerFallback();
               // A pool worker whose pane turns out WSL is checked on the

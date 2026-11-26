@@ -59,7 +59,10 @@ export type ContinueOnAccountCode =
 export type ContinueOnAccountResult =
   | { ok: true; sessionId: string; transcriptPath: string }
   /** Copy-only: what the new pane resumes, in which folder and mode. */
-  | { ok: true; sessionId: string; transcriptPath: string; cwd: string; permissionMode?: ResumeBinding['permissionMode'] }
+  | { ok: true; sessionId: string; transcriptPath: string; cwd: string; permissionMode?: ResumeBinding['permissionMode'];
+    /** A WSL pane's copy: `cwd` is a Linux path, and the new pane opens in
+     *  that pane's distro as its user. */
+    wsl?: true }
   /** `resumeCommand`: Claude stopped and the copy exists, but nothing was
    *  typed. The line that resumes the copy, in this pane's shell. */
   | { ok: false; code: ContinueOnAccountCode; resumeCommand?: string };
@@ -312,23 +315,26 @@ export async function continueOnAccount(
   deps: ContinueOnAccountDeps,
   id: string,
   configDir: string,
-  opts: { copyOnly?: boolean } = {},
+  /** `wslNewPane`: main opens a WSL copy's new pane in the source pane's
+   *  distro as its user. A main without it would open a Windows pane at a
+   *  Linux folder, so a WSL copy-only is refused for it. */
+  opts: { copyOnly?: boolean; wslNewPane?: boolean } = {},
 ): Promise<ContinueOnAccountResult> {
   // One move per pane, shared with the chat ↔ terminal handoffs.
   if (!beginPaneMove(id)) return { ok: false, code: 'busy' };
   try {
     if (deps.chatOwnsPane?.(id)) return { ok: false, code: 'busy' };
-    return await run(deps, id, configDir, opts.copyOnly === true);
+    return await run(deps, id, configDir, opts.copyOnly === true, opts.wslNewPane === true);
   } finally {
     endPaneMove(id);
   }
 }
 
-async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean): Promise<ContinueOnAccountResult> {
+async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean, wslNewPane: boolean): Promise<ContinueOnAccountResult> {
   const pane = deps.pane(id);
   if (!pane) return { ok: false, code: 'no_session' };
   if (pane.exec) return { ok: false, code: 'unsupported' };
-  if (pane.wslTarget) return runWsl(deps, id, pane, configDir, copyOnly);
+  if (pane.wslTarget) return copyOnly && !wslNewPane ? { ok: false, code: 'unsupported' } : runWsl(deps, id, pane, configDir, copyOnly);
   // A copy types nothing into this pane, so its shell does not matter.
   const shell = copyOnly ? null : deps.shellKind(id);
   if (!copyOnly && !shell) return { ok: false, code: 'unsupported' };
@@ -391,9 +397,10 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
  * Linux transcript (planWslTranscriptCopy), Claude is the one its own hook
  * reported (stopped inside the distro), the copy runs there as the pane's
  * user (wslAccountCopy.ts), and the line typed into its bash names the
- * account's home in the distro. Copy-only (a vault sign-in) is refused for
- * now: the new pane would start as the distro's default user, not the
- * source pane's.
+ * account's home in the distro. Copy-only (a vault sign-in): the same
+ * checks and copy, nothing stopped or typed; main opens the new pane in this
+ * pane's distro as its user (pty.handler `wslFrom`), so the new pane's home
+ * is the one copied into.
  */
 async function runWsl(
   deps: ContinueOnAccountDeps,
@@ -403,10 +410,11 @@ async function runWsl(
   copyOnly: boolean,
 ): Promise<ContinueOnAccountResult> {
   const wsl = deps.wsl;
-  if (!wsl || copyOnly) return { ok: false, code: 'unsupported' };
+  if (!wsl) return { ok: false, code: 'unsupported' };
   const live = deps.liveAgent(id);
   if (live !== undefined && !agentRow(live)?.continueOnAccount) return { ok: false, code: 'not_claude' };
   // A Claude its hook never reported cannot be stopped from here.
+  // Nor is its turn known to be closed, so not copied either.
   if (live !== undefined && !wsl.agentTracked(id)) return { ok: false, code: 'unsupported' };
   const binding = pane.resumeBinding;
   const planned = planWslTranscriptCopy(binding, pane, configDir);
@@ -418,20 +426,42 @@ async function runWsl(
   if (!(await wsl.sourceReady(id, binding))) return { ok: false, code: 'unknown_session' };
   if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
   if (await deps.atFolderTrust?.(id)) return { ok: false, code: 'folder_trust' };
+  // A turn opened while the screen was read: its transcript is being written.
+  if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
+  const copy = async (): Promise<'copied' | 'diverged' | 'same'> => {
+    const out = await wsl.copy(id, { configDir, plan, sessionId: binding.sessionId });
+    if (out.result === 'failed') throw new Error(out.reason);
+    // The typed line (or the new pane) names the home by /home/<user>, the
+    // script by $HOME: a copy anywhere else is not the one it would resume.
+    if (out.result === 'copied' && out.home !== plan.home) throw new Error('the copy went to another home');
+    return out.result;
+  };
+  if (copyOnly) {
+    // Claude keeps running in the source pane; a closed turn means it is not
+    // writing the transcript now.
+    try {
+      const copied = await copy();
+      if (copied === 'diverged') return { ok: false, code: 'diverged' };
+      if (copied === 'same') return { ok: false, code: 'same_account' };
+    } catch {
+      return { ok: false, code: 'copy_failed' };
+    }
+    return {
+      ok: true,
+      sessionId: binding.sessionId,
+      transcriptPath: plan.target,
+      cwd: binding.cwd,
+      wsl: true,
+      ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+    };
+  }
   return stopCopyRelaunch(deps, id, configDir, {
     binding,
     line,
     transcriptPath: plan.target,
     // Only the Linux path: a binding's transcriptPath is always one this process can open.
     rebound: { ...binding, wslTranscriptPath: plan.target },
-    copy: async () => {
-      const out = await wsl.copy(id, { configDir, plan, sessionId: binding.sessionId });
-      if (out.result === 'failed') throw new Error(out.reason);
-      // The typed line names the home by /home/<user>, the script by $HOME: a
-      // copy anywhere else is not the one the line would resume.
-      if (out.result === 'copied' && out.home !== plan.home) throw new Error('the copy went to another home');
-      return out.result;
-    },
+    copy,
   });
 }
 

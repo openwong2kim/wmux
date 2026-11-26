@@ -47,6 +47,7 @@ beforeEach(() => {
   deps = {
     dir: path.join(root, 'data'), platform: 'darwin', takenLabels: () => ['ceo', 'dev-1', 'notes'], now: () => NOW,
     worktrees: new TaskWorktreeManager({ worktreesRoot: path.join(root, 'company-worktrees') }),
+    env: {},
   };
 });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
@@ -57,7 +58,8 @@ describe('hireSeat worktrees', () => {
     if (!res.ok) throw new Error(res.error);
     const wt = res.cwd;
     if (!wt) throw new Error('the seat has no worktree');
-    expect(res).toEqual({ ok: true, label: 'dev-4', command: `codex "$(cat '${briefFile()}')"`, cwd: wt, branch: BRANCH });
+    // Any agent's updater stays off (workerAutoUpdateEnv); codex has no first-run env.
+    expect(res).toEqual({ ok: true, label: 'dev-4', command: `codex "$(cat '${briefFile()}')"`, cwd: wt, branch: BRANCH, launchEnv: { DISABLE_AUTOUPDATER: '1' } });
     expect(path.dirname(path.dirname(wt))).toBe(path.join(root, 'company-worktrees'));
     expect(g(wt, 'branch', '--show-current')).toBe(BRANCH);
     expect(fs.readFileSync(path.join(wt, 'a.txt'), 'utf8').trim()).toBe('a');

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { asSpawnLinkId, spawnFirstMessageId, type A2aSpawnRequestState, type SpawnLinkId } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -696,5 +696,36 @@ describe('the spawn-links record', () => {
     const out = JSON.stringify(outbox.pending(HOST).map((r) => r.envelope));
     expect(out).not.toContain(key);
     expect(out).toContain('[redacted]');
+  });
+});
+
+describe('a named base and the base note (spawn-base.1)', () => {
+  const startedResult = (env: A2aRemoteEnvelope) => sent.filter((x) => x.env.linkId === env.linkId && x.env.spawnResult?.code === 'started').map((x) => x.env.spawnResult!);
+
+  it('hands the asker\'s base to the claim, and the note goes back to an asker that reads it', async () => {
+    await allow();
+    receiver = makeReceiver({ peerFeatures: () => new Set([A2A_FEATURE_SPAWN_BASE]) });
+    const env = request({ spawn: { base: 'release/2.0' } });
+    await arrive(env);
+    expect(await receiver.decideCard(HOST, env.linkId, 'once')).toEqual({ ok: true });
+    expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: true, claim: { base: 'release/2.0' } });
+    expect(await receiver.started(HOST, env.linkId, { workspaceId: 'ws-n', paneId: 'pane-n' }, 'git fetch origin release/2.0 failed (offline:\n no route); branched from HEAD')).toEqual({ ok: true });
+    await vi.waitFor(() => expect(startedResult(env)).toHaveLength(1), { timeout: 5_000 });
+    expect(startedResult(env)[0].baseNote).toBe('git fetch origin release/2.0 failed (offline: no route); branched from HEAD');
+    // Kept for a resend of the answer, across a restart of the store.
+    expect(new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet }).get(HOST, env.linkId)?.baseNote).toContain('offline');
+  });
+
+  it('an asker that does not read it gets the same answer without the note', async () => {
+    await allow();
+    receiver = makeReceiver({ peerFeatures: () => new Set() });
+    const env = request();
+    await arrive(env);
+    expect(await receiver.decideCard(HOST, env.linkId, 'once')).toEqual({ ok: true });
+    const claimed = await receiver.claim(HOST, env.linkId);
+    expect(claimed.ok && claimed.claim).not.toHaveProperty('base');
+    expect(await receiver.started(HOST, env.linkId, { workspaceId: 'ws-o', paneId: 'pane-o' }, 'no origin; branched from HEAD')).toEqual({ ok: true });
+    await vi.waitFor(() => expect(startedResult(env)).toHaveLength(1), { timeout: 5_000 });
+    expect(Object.keys(startedResult(env)[0]).sort()).toEqual(['code', 'endpoint', 'linkId', 'linkVersion', 'spawnId', 'v']);
   });
 });

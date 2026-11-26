@@ -1,9 +1,10 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useSyncExternalStore } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { markChatV2Covering } from './coverage';
 import { usePaneMove } from './ContinueInChat';
 import { usePaneChatV2Binding } from './useChatV2';
+import { knownBinding, onKnownBindings } from './controller';
 import { selectChatSurfaceView, type ChatSurfaceView } from './viewState';
 
 const ChatV2View = lazy(() => import('./ChatV2View'));
@@ -17,6 +18,20 @@ export function useChatSurfaceView(ptyId: string | undefined, chatViewEnabled: b
   const move = usePaneMove(ptyId);
   if (!ptyId) return chatViewEnabled && viewMode === 'chat' ? 'projection' : 'terminal';
   return selectChatSurfaceView({ chatViewEnabled, viewMode, binding, agentRunning, movingFromProjection: move.fromProjection && move.phase === 'moving' });
+}
+
+/**
+ * Whether the surface shows the chat-v2 view, for the pane header's kind
+ * badge. Reads what the pane already asked the host and re-renders only when
+ * the answer flips, not on every push that republishes the binding.
+ */
+export function useShowsChatV2(ptyId: string | undefined, chatViewEnabled: boolean, viewMode: 'terminal' | 'chat' | undefined): boolean {
+  const agentRunning = useStore((s) => !!ptyId && !!s.surfaceAgent[ptyId]?.name
+    && s.agentAliveByPtyId?.[ptyId] !== false && s.commandRunningByPtyId?.[ptyId] !== false);
+  const move = usePaneMove(ptyId);
+  const moving = move.fromProjection && move.phase === 'moving';
+  return useSyncExternalStore(onKnownBindings, () => !!ptyId
+    && selectChatSurfaceView({ chatViewEnabled, viewMode, binding: knownBinding(ptyId), agentRunning, movingFromProjection: moving }) === 'chatv2');
 }
 
 /** The chat-v2 view laid over the pane's (inert) anchor terminal. */

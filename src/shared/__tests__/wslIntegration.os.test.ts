@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { accountHomeWslFlags, buildWslInjection, WSL_ACCOUNT_SH, WSL_CLAUDE_SHIM, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { accountHomeWslFlags, buildWslInjection, WSL_ACCOUNT_SH, WSL_CLAUDE_SHIM, WSL_HOOK, WSL_STATUSLINE, wslClaudeHooks } from '../wslIntegration';
 import { ACCOUNT_SHARE_MARKER, wslAccountHomeKey } from '../wslAccountHome';
 import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
@@ -57,6 +57,18 @@ describe('WSL per-launch Claude integration', () => {
     expect(build({}).some((e) => e.startsWith('CLAUDE_CODE_SANDBOXED'))).toBe(false);
   });
 
+  it('a worker pane\'s DISABLE_AUTOUPDATER reaches Linux claude; an ordinary pane\'s env is not sent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
+    const build = (env: Record<string, string>) => buildWslInjection({
+      target: { distribution: 'test', user: 'test' }, cwd: dir, env: { HOME: dir, PATH: '/usr/bin:/bin', ...env },
+      integrationDir: dir, bashInit: BASH_INIT, runtimePath: process.execPath, bridgePath: '/unused-bridge',
+    }).env.WSLENV.split(':');
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '1' })).toContain('DISABLE_AUTOUPDATER/u');
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '0' })).toContain('DISABLE_AUTOUPDATER/u');
+    expect(build({ DISABLE_AUTOUPDATER: '1' }).some((e) => e.startsWith('DISABLE_AUTOUPDATER'))).toBe(false);
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1' }).some((e) => e.startsWith('DISABLE_AUTOUPDATER'))).toBe(false);
+  });
+
   it('uses scoped settings and the existing Windows bridge without writing user settings', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
     const injected = buildWslInjection({
@@ -86,7 +98,7 @@ describe('WSL per-launch Claude integration', () => {
     expect(fs.readdirSync(dir)).toEqual(['wsl']);
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
     const shim = fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8');
-    expect(shim).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${mcp_config:+--mcp-config="$mcp_config"} "$@"');
+    expect(shim).toContain('"$real" --settings "$wmux_settings" ${mcp_config:+--mcp-config="$mcp_config"} "$@"');
     // A launch that names its own servers (a bot's worker) keeps them alone.
     expect(shim).toContain('mcp_config=${WMUX_WSL_MCP_CONFIG:-}');
     expect(shim).toContain('case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac');
@@ -107,6 +119,80 @@ describe('WSL per-launch Claude integration', () => {
     expect(run('--mcp-config=/w.json', '--strict-mcp-config', '--', 'go')).toBe('[--settings][/s.json][--mcp-config=/w.json][--strict-mcp-config][--][go]');
     // The words after -- are the prompt, not options.
     expect(run('--', '--strict-mcp-config')).toBe('[--settings][/s.json][--mcp-config=/m.json][--][--strict-mcp-config]');
+  });
+
+  describe('the usage statusline in a WSL pane', () => {
+    const inject = (statuslinePath?: string | null) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-sl-')); dirs.push(dir);
+      return { dir, injected: buildWslInjection({
+        target: { distribution: 'Ubuntu', user: 'me' }, cwd: '/home/me', env: { WMUX_PTY_ID: 'pane-one' },
+        integrationDir: dir, bashInit: '', runtimePath: 'C:\\wmux\\wmux.exe', bridgePath: 'C:\\wmux\\wmux-bridge.mjs',
+        ...(statuslinePath !== undefined ? { statuslinePath } : {}),
+      }) };
+    };
+
+    it('adds a settings file with wmux\'s statusLine, the script Windows node opens, and its WSLENV entries', () => {
+      const { injected } = inject('C:\\wmux\\wmux-statusline.mjs');
+      const withLine = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_SETTINGS_STATUSLINE, 'utf8'));
+      expect(withLine.statusLine).toEqual({ type: 'command', command: '/bin/sh "$WMUX_WSL_STATUSLINE_SH"', padding: 0 });
+      expect(withLine.hooks).toEqual(wslClaudeHooks());
+      // The plain one keeps hooks only.
+      expect(JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_SETTINGS, 'utf8')).statusLine).toBeUndefined();
+      expect(fs.readFileSync(injected.env.WMUX_WSL_STATUSLINE_SH, 'utf8')).toBe(WSL_STATUSLINE);
+      expect(injected.env.WMUX_WSL_STATUSLINE).toBe('C:\\wmux\\wmux-statusline.mjs');
+      expect(injected.env.WSLENV.split(':')).toEqual(expect.arrayContaining([
+        'WMUX_WSL_STATUSLINE/u', 'WMUX_WSL_STATUSLINE_SH/p', 'WMUX_WSL_SETTINGS_STATUSLINE/p', 'WMUX_PTY_ID', 'WMUX_DATA_SUFFIX',
+      ]));
+      // The account's Windows folder never crosses for the statusline.
+      expect(injected.env.WSLENV.split(':').some((e) => e.startsWith('CLAUDE_CONFIG_DIR'))).toBe(false);
+    });
+
+    it('adds nothing when the script does not ship', () => {
+      const { injected } = inject(null);
+      expect(injected.env.WMUX_WSL_SETTINGS_STATUSLINE).toBeUndefined();
+      expect(injected.env.WSLENV).not.toContain('STATUSLINE');
+    });
+
+    it.skipIf(process.platform === 'win32')('runs Windows node with the Linux config dir as is (/w, never translated), or none when unset', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-sl-run-')); dirs.push(dir);
+      const node = path.join(dir, 'node');
+      fs.writeFileSync(node, '#!/bin/sh\nprintf "%s|%s|%s|%s" "$1" "$ELECTRON_RUN_AS_NODE" "$WMUX_STATUSLINE_CONFIG_DIR" "$WSLENV"\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'statusline.sh'), WSL_STATUSLINE);
+      const run = (extra: Record<string, string>) => execFileSync('/bin/sh', [path.join(dir, 'statusline.sh')], {
+        encoding: 'utf8', env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_STATUSLINE: 'C:\\wmux\\wmux-statusline.mjs', WSLENV: 'WMUX_PTY_ID', ...extra },
+      });
+      expect(run({ CLAUDE_CONFIG_DIR: '/home/me/.wmux/accounts/claude-0123456789abcdef' }))
+        .toBe('C:\\wmux\\wmux-statusline.mjs|1|d:/home/me/.wmux/accounts/claude-0123456789abcdef|WMUX_PTY_ID:ELECTRON_RUN_AS_NODE/w:WMUX_STATUSLINE_CONFIG_DIR/w');
+      expect(run({}).split('|')[2]).toBe('none');
+      // A relative one is made absolute against the working folder.
+      expect(execFileSync('/bin/sh', [path.join(dir, 'statusline.sh')], {
+        encoding: 'utf8', cwd: dir, env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_STATUSLINE: 's', CLAUDE_CONFIG_DIR: './cfg', PWD: dir },
+      }).split('|')[2]).toBe(`d:${dir}/./cfg`);
+      // Without the Windows side's paths it is silent.
+      expect(execFileSync('/bin/sh', [path.join(dir, 'statusline.sh')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } })).toBe('');
+    });
+
+    it.skipIf(process.platform === 'win32')('the claude shim takes the statusLine settings only when the user\'s and the project\'s settings set none', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-sl-shim-')); dirs.push(dir);
+      const bin = path.join(dir, 'bin'); const real = path.join(dir, 'real'); const home = path.join(dir, 'home'); const project = path.join(dir, 'project');
+      for (const d of [bin, real, path.join(home, '.claude'), path.join(project, '.claude')]) fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(bin, 'claude'), WSL_CLAUDE_SHIM, { mode: 0o755 });
+      fs.writeFileSync(path.join(real, 'claude'), '#!/bin/sh\nprintf "%s" "$2"\n', { mode: 0o755 });
+      const run = (extra: Record<string, string> = {}) => execFileSync('/bin/sh', [path.join(bin, 'claude')], {
+        encoding: 'utf8', cwd: project,
+        env: { PATH: `${bin}:${real}:/usr/bin:/bin`, HOME: home, WMUX_WSL_BIN: bin, WMUX_WSL_SETTINGS: '/plain.json', WMUX_WSL_SETTINGS_STATUSLINE: '/line.json', ...extra },
+      });
+      expect(run()).toBe('/line.json');
+      fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{"statusLine":{"type":"command","command":"mine"}}');
+      expect(run()).toBe('/plain.json');
+      // An account home's own settings decide for a pane on that account.
+      const account = path.join(dir, 'account'); fs.mkdirSync(account);
+      expect(run({ CLAUDE_CONFIG_DIR: account })).toBe('/line.json');
+      fs.writeFileSync(path.join(project, '.claude', 'settings.local.json'), '{"statusLine":{"type":"command","command":"proj"}}');
+      expect(run({ CLAUDE_CONFIG_DIR: account })).toBe('/plain.json');
+      // No statusLine settings (the script missing): the plain one.
+      expect(run({ WMUX_WSL_SETTINGS_STATUSLINE: '' })).toBe('/plain.json');
+    });
   });
 
   describe('account homes across the Windows/WSL boundary', () => {

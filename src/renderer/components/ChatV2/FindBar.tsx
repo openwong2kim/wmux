@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { Block } from '../../../shared/chatv2/session';
 import { findTranscriptBlocks } from './find';
 import { S } from './strings';
+import { ArrowIcon } from './ArrowIcon';
+import { IconX } from '../icons';
 
 /** Find in the loaded transcript. Calls `onNavigate` with the selected block id (null on close). */
 export function FindBar({ blocks, onNavigate, onClose }: {
@@ -45,9 +47,9 @@ export function FindBar({ blocks, onNavigate, onClose }: {
         onKeyDown={onKeyDown}
       />
       <span className="wmux-chatv2-find-count" aria-live="polite">{query.trim() ? S.findCount(index + 1, matches.length) : ''}</span>
-      <button type="button" className="wmux-chatv2-icon" aria-label={S.findPrev} disabled={!matches.length} onClick={() => step(-1)}>↑</button>
-      <button type="button" className="wmux-chatv2-icon" aria-label={S.findNext} disabled={!matches.length} onClick={() => step(1)}>↓</button>
-      <button type="button" className="wmux-chatv2-icon" aria-label={S.findClose} onClick={onClose}>✕</button>
+      <button type="button" className="wmux-chatv2-icon" aria-label={S.findPrev} disabled={!matches.length} onClick={() => step(-1)}><ArrowIcon dir="up" size={12} /></button>
+      <button type="button" className="wmux-chatv2-icon" aria-label={S.findNext} disabled={!matches.length} onClick={() => step(1)}><ArrowIcon dir="down" size={12} /></button>
+      <button type="button" className="wmux-chatv2-icon" aria-label={S.findClose} onClick={onClose}><IconX size={12} /></button>
     </div>
   );
 }

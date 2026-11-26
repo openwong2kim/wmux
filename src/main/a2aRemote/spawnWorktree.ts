@@ -5,14 +5,17 @@ import { promisify } from 'node:util';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
 import { resolveExecutable } from '../../shared/exeSearch';
-import { isSpawnId } from '../../shared/a2aSpawn';
-import { parseGitConfigList, workerGitEnv, workerGitSafeArgs } from '../worktask/workerGit';
+import { isSpawnBaseName, isSpawnId } from '../../shared/a2aSpawn';
+import { parseGitConfigList, urlNamedRemoteRefusal, workerGitConfigRefusal, workerGitEnv, workerGitSafeArgs, workerOriginRefusal, type GitConfigEntry } from '../worktask/workerGit';
 
 /**
  * The fresh worktree a remote spawn's agent works in: another paired PC asked
  * this PC to start an agent in folder `sub` of an allowed repository, and
- * the agent gets its own branch `wmux/remote/<spawnId>` checked out from HEAD
- * under the worktrees root.
+ * the agent gets its own branch `wmux/remote/<spawnId>` under the worktrees
+ * root, checked out from origin's default branch as fetched now (origin/HEAD,
+ * else main, else master): this PC's own checkout may be on any branch, and
+ * old. When it cannot be fetched (offline, no origin, a config main does not
+ * fetch with) the branch starts at HEAD, and `baseNote` says why.
  *
  * The repository's own config may have been written by an agent that worked
  * in it before, so the checkout runs nothing that config names: no hooks, no
@@ -31,6 +34,8 @@ const execFileAsync = promisify(execFile);
 const MAX_WORKTREE_PATH_LEN = 260;
 const GIT_TIMEOUT_MS = 30_000;
 const DETAIL_MAX = 500;
+/** Each network call of the base (the remote's HEAD, the fetch): short, so an offline PC falls back to HEAD soon. */
+export const SPAWN_BASE_FETCH_TIMEOUT_MS = 15_000;
 
 export interface SpawnWorktreeInput {
   /** realpath of an allowed root; must be a git repository's top level */
@@ -39,10 +44,20 @@ export interface SpawnWorktreeInput {
   sub: string;
   /** 'sp-<uuid>' */
   spawnId: string;
+  /** The branch of origin to start from (isSpawnBaseName); absent: origin's default branch. */
+  base?: string;
 }
 
 export type SpawnWorktreeResult =
-  | { ok: true; worktreePath: string; cwd: string; branch: string }
+  | {
+    ok: true; worktreePath: string; cwd: string; branch: string;
+    /** The commit the branch starts at. */
+    base: string;
+    /** `origin/<default>` when the base is origin's default branch, fetched now. */
+    baseRef?: string;
+    /** Why the base is this PC's HEAD instead (not fetched, or the fetch failed). */
+    baseNote?: string;
+  }
   | { ok: false; code: 'folder-not-allowed' | 'failed'; detail: string };
 
 export interface SpawnWorktreeOptions {
@@ -112,8 +127,11 @@ export async function createSpawnWorktree(input: SpawnWorktreeInput, opts: Spawn
 
   const undo = (): Promise<void> => removeWorktree(git, root, worktreePath, branch);
 
+  // The base: origin's default branch, fetched now, else HEAD.
+  const base = await resolveSpawnBase(repo, opts, git, parseGitConfigList(conf.stdout), input.base);
+
   // No files yet: the config is read again first, as the new worktree sees it.
-  const add = await git(['worktree', 'add', '--no-checkout', '--no-track', '-b', branch, worktreePath, 'HEAD'], [...noSubmodules, ...noTracking, ...noFilters]);
+  const add = await git(['worktree', 'add', '--no-checkout', '--no-track', '-b', branch, worktreePath, base.commit], [...noSubmodules, ...noTracking, ...noFilters]);
   if (add.code !== 0) {
     await undo();
     return failed(`git worktree add failed: ${add.stderr.trim()}`);
@@ -158,7 +176,71 @@ export async function createSpawnWorktree(input: SpawnWorktreeInput, opts: Spawn
     await undo();
     return notAllowed(`${input.sub || '.'} is not a folder inside the new worktree`);
   }
-  return { ok: true, worktreePath: wtReal, cwd: cwdReal, branch };
+  return { ok: true, worktreePath: wtReal, cwd: cwdReal, branch, base: base.commit, ...(base.ref ? { baseRef: base.ref } : {}), ...(base.note ? { baseNote: base.note } : {}) };
+}
+
+/**
+ * Where a spawn's branch starts: `wanted` (a branch the asker named), else
+ * origin's default branch (`origin/HEAD`, else `origin/main`, else
+ * `origin/master`, else the remote's own HEAD), fetched now and pinned to one
+ * commit. Fetched only when the repository's own
+ * config names nothing git would run or connect through (workerGitConfigRefusal),
+ * origin holds only its URL and refspec, and no remote or bundle URI would
+ * stand in for it. Every network call has SPAWN_BASE_FETCH_TIMEOUT_MS, no
+ * prompt, and ssh in batch mode unless the owner set their own ssh command.
+ * Anything else: HEAD, with the reason in `note`. Never throws.
+ */
+async function resolveSpawnBase(repo: string, opts: SpawnWorktreeOptions, git: Git, entries: readonly GitConfigEntry[], wanted?: string): Promise<{ commit: string; ref?: string; note?: string }> {
+  const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  const headCommit = head.code === 0 ? head.stdout.trim() : 'HEAD';
+  const fallback = (why: string): { commit: string; note: string } => ({
+    commit: headCommit,
+    note: `${why.slice(0, DETAIL_MAX)}; branched from this PC's HEAD, which may not be ${wanted ? `origin/${wanted}` : 'origin\'s default branch'}`,
+  });
+  if (wanted !== undefined && !isSpawnBaseName(wanted)) return fallback(`the base ${JSON.stringify(String(wanted).slice(0, 80))} is not a branch name`);
+
+  const refused = workerGitConfigRefusal(entries);
+  if (refused) return fallback(`origin was not fetched: ${refused}`);
+  const origin = workerOriginRefusal(entries);
+  if ('error' in origin) return fallback(`origin was not fetched: ${origin.error}`);
+  const named = urlNamedRemoteRefusal(entries, origin.url);
+  if (named) return fallback(`origin was not fetched: ${named}`);
+  const bundle = entries.find((e) => (e.scope === 'local' || e.scope === 'worktree') && (/^(?:fetch|transfer)\.bundleuri$/.test(e.key) || e.key.startsWith('bundle.')));
+  if (bundle) return fallback(`origin was not fetched: the repository's git config sets ${bundle.key}`);
+
+  const ownSsh = entries.some((e) => e.key === 'core.sshcommand') || !!process.env.GIT_SSH_COMMAND || !!process.env.GIT_SSH || !!opts.env?.GIT_SSH_COMMAND || !!opts.env?.GIT_SSH;
+  const net = gitRunner(repo, {
+    ...opts,
+    timeoutMs: SPAWN_BASE_FETCH_TIMEOUT_MS,
+    env: { ...(opts.env ?? {}), GIT_TERMINAL_PROMPT: '0', ...(ownSsh ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }) },
+  });
+
+  let name: string | undefined = wanted;
+  const sym = name ? null : await git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  if (sym && sym.code === 0 && sym.stdout.trim().startsWith('refs/remotes/origin/')) name = sym.stdout.trim().slice('refs/remotes/origin/'.length);
+  for (const candidate of ['main', 'master']) {
+    if (name) break;
+    if ((await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${candidate}^{commit}`])).code === 0) name = candidate;
+  }
+  if (!name) {
+    const remote = await net(['ls-remote', '--symref', 'origin', 'HEAD']);
+    if (remote.code !== 0) return fallback(`origin's default branch could not be read (${remote.stderr.trim() || `exit ${remote.code}`})`);
+    name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(remote.stdout)?.[1];
+  }
+  if (!name) return fallback('origin names no default branch');
+  // A name git takes as a branch (check-ref-format), and never one read as an option.
+  if (name.startsWith('-') || name.length > 200 || (await git(['check-ref-format', `refs/heads/${name}`])).code !== 0) {
+    return fallback(`origin's default branch name ${JSON.stringify(name.slice(0, 80))} was not used`);
+  }
+
+  const ref = `refs/remotes/origin/${name}`;
+  // `--refmap=`: only this refspec is written. Without it a configured `remote.origin.fetch` mapping
+  // (`+refs/heads/main:refs/heads/x`) would also move whatever local ref it names.
+  const fetched = await net(['fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--no-auto-maintenance', '--refmap=', 'origin', `+refs/heads/${name}:${ref}`]);
+  if (fetched.code !== 0) return fallback(`git fetch origin ${name} failed (${fetched.stderr.trim() || `exit ${fetched.code}`})`);
+  const pinned = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  if (pinned.code !== 0) return fallback(`${ref} does not exist after git fetch origin ${name}`);
+  return { commit: pinned.stdout.trim(), ref: `origin/${name}` };
 }
 
 /**

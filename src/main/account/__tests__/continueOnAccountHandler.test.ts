@@ -36,12 +36,21 @@ describe('continue on an account', () => {
   it('a token account takes the conversation in a new pane: the daemon only copies', async () => {
     const d = deps();
     const res = await continuePane(d, { ptyId: 'daemon-1', accountId: token.id });
-    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/token' });
+    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/token', wslNewPane: true });
     expect(res).toEqual({
       ok: true,
       newPane: { accountId: token.id, command: `claude --resume ${SID} --dangerously-skip-permissions`, cwd: '/work' },
     });
     expect(JSON.stringify(res)).not.toContain(TOKEN);
+  });
+
+  it('a WSL pane\'s copy opens the new pane from that pane (its distro and user), at its Linux folder', async () => {
+    const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: true, sessionId: SID, transcriptPath: '/x', cwd: '/home/me/repo', wsl: true }));
+    expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({
+      ok: true, newPane: { accountId: token.id, command: `claude --resume ${SID}`, cwd: '/home/me/repo', wslFrom: 'daemon-1' },
+    });
+    const notLinux: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: true, sessionId: SID, transcriptPath: '/x', cwd: 'C:\\repo', wsl: true }));
+    expect(await continuePane(deps({ rpc: notLinux }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'unknown_session' });
   });
 
   it('an account without a token keeps the same-pane switch', async () => {
@@ -65,7 +74,7 @@ describe('continue on an account', () => {
     const d = deps({ sourceSignedIn });
     const res = await continuePane(d, { ptyId: 'daemon-1', accountId: plain.id, workspaceId: 'ws-1' });
     expect(sourceSignedIn).toHaveBeenCalledWith('daemon-1', 'ws-1');
-    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/plain' });
+    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/plain', wslNewPane: true });
     expect(res).toMatchObject({ ok: true, newPane: { accountId: plain.id, cwd: '/work' } });
   });
 

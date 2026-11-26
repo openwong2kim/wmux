@@ -134,6 +134,13 @@ pub struct Grid<T> {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub narrowing_added: usize,
 
+    /// wmux: the last resize's narrowing dropped rows of a paragraph xterm
+    /// reflowed (`shrink_columns`, `NarrowingPlan::clips_reflowed`): xterm
+    /// keeps a different part of it, so the snapshot refuses. false after any
+    /// resize that did not narrow with reflow.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub narrowing_clipped: bool,
+
     /// Lines in the grid. Each row holds a list of cells corresponding to the
     /// columns in that row.
     raw: Storage<T>,
@@ -164,6 +171,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             saved_cursor: Cursor::default(),
             cursor_saved: false,
             narrowing_added: 0,
+            narrowing_clipped: false,
             cursor: Cursor::default(),
             lines,
             columns,

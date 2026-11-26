@@ -24,7 +24,7 @@ let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-host-codex-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean; commandLine?: string } = {}) {
+function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean; commandLine?: string; settingsUpdate?: 'ok' | 'refuse'; failWrite?: FakeCodex['failWrite'] } = {}) {
   let ownerCalls = 0;
   const killed: number[] = [];
   const clock = { now: 100_000 };
@@ -58,6 +58,8 @@ function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean;
     drivers: (agent) => {
       if (agent !== 'codex') return null;
       const fake = new FakeCodex();
+      fake.settingsUpdate = options.settingsUpdate ?? 'ok';
+      fake.failWrite = options.failWrite ?? null;
       fakes.push(fake);
       return new CodexDriver({ command: 'codex', backend: fake.backend() });
     },
@@ -81,6 +83,89 @@ function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean;
 }
 
 describe('chat v2 host: a Codex chat', () => {
+  it('changes effort on the thread between turns, and a refused level leaves the chat as it was and usable', async () => {
+    const r = rig();
+    const b = await r.create();
+    r.fake().settingsUpdate = 'refuse';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBeUndefined();
+    expect(r.host.statusForPane(PANE)).toBe('idle');
+    expect(r.fakes).toHaveLength(1);
+    r.fake().settingsUpdate = 'ok';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main'))
+      .toMatchObject({ ok: true, applied: 'live' });
+    expect(r.fake().calls('thread/settings/update').at(-1)?.params).toMatchObject({ threadId: expect.any(String), effort: 'high' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('restarts when a change goes unanswered, and records the level the new process runs, not one it refused', async () => {
+    const options: { settingsUpdate: 'ok' | 'refuse' } = { settingsUpdate: 'ok' };
+    const r = rig(options);
+    const b = await r.create();
+    // The write fails: whether Codex took it is unknown, so it restarts with the change.
+    r.fake().failWrite = (line) => line.method === 'thread/settings/update';
+    options.settingsUpdate = 'refuse';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main'))
+      .toMatchObject({ ok: true, applied: 'restarted' });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('starts anyway when Codex refuses the effort a new chat asked for', async () => {
+    const r = rig({ settingsUpdate: 'refuse' });
+    const res = await r.host.call('create', { paneId: PANE, agent: 'codex', mode: 'default', effort: 'xhigh' }, 'main');
+    expect(res).toMatchObject({ ok: true, binding: { status: 'idle' } });
+    expect(r.fake().calls('thread/settings/update')).toHaveLength(1);
+    await until(() => r.host.sessionForPane(PANE)?.modelSettings.effort === '');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('does not start when the effort a new chat asked for goes unanswered', async () => {
+    const r = rig({ failWrite: (line) => line.method === 'thread/settings/update' });
+    expect(await r.host.call('create', { paneId: PANE, agent: 'codex', mode: 'default', effort: 'xhigh' }, 'main')).toMatchObject({ ok: false });
+    await r.host.dispose();
+  });
+
+  it('goes back to the default effort by a new thread before the first turn, and refuses it after one', async () => {
+    const r = rig();
+    const b = await r.create();
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main')).toMatchObject({ ok: true, applied: 'live' });
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: '' }, 'main')).toMatchObject({ ok: true, applied: 'restarted' });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().calls('thread/start')).toHaveLength(1);
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main')).toMatchObject({ ok: true, applied: 'live' });
+    expect(await r.send()).toMatchObject({ ok: true });
+    r.fake().note('turn/completed', { turn: { id: 'turn-1', status: 'completed', items: [] } });
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    // A resume keeps the thread's last level, so the default cannot be reached.
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: '' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    await r.host.dispose();
+  });
+
+  it('with no agent running, refuses the default effort for a thread that has turns, and still saves a level', async () => {
+    const r = rig();
+    const b = await r.create();
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main')).toMatchObject({ ok: true, applied: 'live' });
+    await r.send();
+    r.fake().note('turn/completed', { turn: { id: 'turn-1', status: 'completed', items: [] } });
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    r.fake().exit(1, null);
+    await until(() => r.host.statusForPane(PANE) === 'stopped');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: '' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main')).toMatchObject({ ok: true, applied: 'saved' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('xhigh');
+    await r.host.dispose();
+  });
+
   it('records its decisions as chat-v2 Codex ones, and an answer approves only the card raised last', async () => {
     const r = rig();
     const b = await r.create();

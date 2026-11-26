@@ -70,6 +70,28 @@ export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC/w:
 exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 
+/**
+ * Claude Code's statusLine in a WSL pane: the wmux usage statusline
+ * (integrations/claude/bin/wmux-statusline.mjs), run as Windows node over
+ * interop the way WSL_HOOK runs the bridge. On the Windows side it dials
+ * main's own pipe with the instance's token file, which never enters the
+ * distro. The pane's CLAUDE_CONFIG_DIR is a Linux path: it goes as
+ * `d:<dir>` (`none` when unset) in a variable of its own, /w so Windows gets
+ * it untranslated, never the Windows CLAUDE_CONFIG_DIR of the interop side.
+ */
+export const WSL_STATUSLINE = `#!/bin/sh
+[ -n "\${WMUX_WSL_NODE:-}" ] && [ -n "\${WMUX_WSL_STATUSLINE:-}" ] || exit 0
+WMUX_STATUSLINE_CONFIG_DIR=\${CLAUDE_CONFIG_DIR:+d:$CLAUDE_CONFIG_DIR}
+# A relative one is claude's own working folder's: made absolute the same way.
+case $CLAUDE_CONFIG_DIR in ''|/*) ;; *) WMUX_STATUSLINE_CONFIG_DIR="d:$PWD/$CLAUDE_CONFIG_DIR" ;; esac
+export ELECTRON_RUN_AS_NODE=1 WMUX_STATUSLINE_CONFIG_DIR="\${WMUX_STATUSLINE_CONFIG_DIR:-none}"
+export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_STATUSLINE_CONFIG_DIR/w"
+exec "$WMUX_WSL_NODE" "$WMUX_WSL_STATUSLINE"
+`;
+
+/** The statusLine entry of a WSL pane's claude settings (WSL_STATUSLINE). */
+export const WSL_STATUSLINE_SETTING = { type: 'command', command: '/bin/sh "$WMUX_WSL_STATUSLINE_SH"', padding: 0 } as const;
+
 export const WSL_CLAUDE_SHIM = `#!/bin/sh
 # Remove this shim directory from a PATH, including repeated/nested injections.
 strip_shim() {
@@ -147,8 +169,16 @@ mcp_config=\${WMUX_WSL_MCP_CONFIG:-}
 for arg in "$@"; do
   case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac
 done
+# --settings outranks the user's and the project's settings, so the one with
+# wmux's statusLine is used only when none of those sets a statusLine: the
+# user's own is never replaced (managed settings outrank both anyway).
+wmux_settings=$WMUX_WSL_SETTINGS
+if [ -n "\${WMUX_WSL_SETTINGS_STATUSLINE:-}" ] && ! grep -qs '"statusLine"' \
+  "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" .claude/settings.json .claude/settings.local.json; then
+  wmux_settings=$WMUX_WSL_SETTINGS_STATUSLINE
+fi
 # --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
+exec "$real" --settings "$wmux_settings" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
 `;
 
 /**
@@ -194,8 +224,17 @@ fi`;
  */
 export const WSL_ACCOUNT_INJECTED_VARS: readonly string[] = [
   'WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_CODEX_SHARE',
-  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV,
+  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV, 'WMUX_WSL_ACCOUNT_CLAUDE_TOKEN',
 ];
+
+/**
+ * Set (to 1) in a WSL spawn's process env, never its saved env, when the spawn
+ * carries a Claude token from a vault (DaemonSessionManager withSecretEnv).
+ * WSL_ACCOUNT_SH then marks first-run setup done in a Claude account's home,
+ * as markClaudeOnboardingDone does in the Windows folder: Claude Code reads
+ * the token only once that is marked.
+ */
+export const WSL_CLAUDE_TOKEN_MARK = 'WMUX_WSL_ACCOUNT_CLAUDE_TOKEN';
 
 const shareList = (vendor: AccountVendor, kind: 'linkDirs' | 'copyFiles') => ACCOUNT_SHARE_MANIFEST[vendor][kind].join(' ');
 
@@ -254,8 +293,18 @@ __wmux_account_home() {
       return 1
     fi
   fi
+  # A token sign-in: Claude Code reads the token only once its first-run setup
+  # is marked done in the home's .claude.json. Only a missing file is created
+  # (never one that exists or is a link): editing Claude's own file here would
+  # race its save, which takes a lock this script cannot.
+  __wmux_token=
+  if [ "$__wmux_vendor" = claude ] && [ "\${WMUX_WSL_ACCOUNT_CLAUDE_TOKEN:-}" = 1 ]; then
+    __wmux_token=1
+    [ -e "$__wmux_home/.claude.json" ] || [ -L "$__wmux_home/.claude.json" ] ||
+      (umask 077 && set -C && printf '{"hasCompletedOnboarding":true}\\n' > "$__wmux_home/.claude.json") 2>/dev/null
+  fi
   if [ "$__wmux_vendor" = codex ]; then __wmux_login=auth.json __wmux_how="codex login"; else __wmux_login=.credentials.json __wmux_how="/login in claude"; fi
-  if [ ! -e "$__wmux_home/$__wmux_login" ]; then
+  if [ -z "$__wmux_token" ] && [ ! -e "$__wmux_home/$__wmux_login" ]; then
     __wmux_note="wmux: this pane's $__wmux_vendor account has no sign-in in this WSL distro yet; signing in here ($__wmux_how) signs in this account only, other panes keep theirs."
     if [ "$__wmux_mode" = interactive ]; then
       printf '%s\\n' "$__wmux_note" >&2
@@ -269,7 +318,7 @@ __wmux_account_rc=0
 [ -z "\${WMUX_WSL_ACCOUNT_CLAUDE:-}" ] || __wmux_account_home claude "$WMUX_WSL_ACCOUNT_CLAUDE" "\${WMUX_WSL_ACCOUNT_CLAUDE_SHARE:-}" CLAUDE_CONFIG_DIR "\${1:-interactive}" || __wmux_account_rc=1
 [ -z "\${WMUX_WSL_ACCOUNT_CODEX:-}" ] || __wmux_account_home codex "$WMUX_WSL_ACCOUNT_CODEX" "\${WMUX_WSL_ACCOUNT_CODEX_SHARE:-}" CODEX_HOME "\${1:-interactive}" || __wmux_account_rc=1
 unset -f __wmux_account_home
-unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note
+unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note __wmux_token
 eval "unset __wmux_account_rc; return $__wmux_account_rc"
 `;
 
@@ -309,7 +358,7 @@ case "$project" in ''|.|..|*/*) exit 1 ;; esac
 case "$src" in /*) ;; *) exit 1 ;; esac
 [ -f "$src" ] && [ ! -L "$src" ] || exit 1
 [ -n "\${WMUX_WSL_ACCOUNT_SH:-}" ] && [ -r "$WMUX_WSL_ACCOUNT_SH" ] || exit 1
-unset CLAUDE_CONFIG_DIR WMUX_WSL_ACCOUNT_CODEX WMUX_WSL_ACCOUNT_CLAUDE_SHARE
+unset CLAUDE_CONFIG_DIR WMUX_WSL_ACCOUNT_CODEX WMUX_WSL_ACCOUNT_CLAUDE_SHARE WMUX_WSL_ACCOUNT_CLAUDE_TOKEN
 export WMUX_WSL_ACCOUNT_CLAUDE="$key" WMUX_DATA_SUFFIX="$suffix"
 [ "$share" != 1 ] || export WMUX_WSL_ACCOUNT_CLAUDE_SHARE=1
 . "$WMUX_WSL_ACCOUNT_SH" quiet || exit 1
@@ -520,6 +569,15 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
   return found;
 }
 
+/** The usage statusline a WSL pane's claude runs (WSL_STATUSLINE), or null when it is missing. */
+function findWslStatusline(startDir: string): string | null {
+  try {
+    return findBridge(startDir, 'wmux-statusline.mjs');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The Claude bridge a WSL pane's hook runs, or null when it is missing: the
  * same lookup, so the global WSL hook (shared/wslGlobalHook.ts) and a pane's
@@ -603,6 +661,8 @@ export function buildWslInjection(options: {
   codexConfigPath?: string;
   /** Windows MCP entry; null skips MCP. Missing bundle also skips, never fails the pane. */
   mcpEntryPath?: string | null;
+  /** The usage statusline script; null skips it. Missing also skips. */
+  statuslinePath?: string | null;
 }): { args: string[]; env: Record<string, string> } {
   const { target, cwd, integrationDir } = options;
   const dir = path.join(integrationDir, 'wsl');
@@ -616,6 +676,12 @@ export function buildWslInjection(options: {
   write(path.join(dir, 'codex-hook.sh'), WSL_CODEX_HOOK);
   write(path.join(bin, 'codex'), WSL_CODEX_SHIM);
   write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks: wslClaudeHooks() }));
+  // The usage statusline, when its script ships (WSL_STATUSLINE).
+  const statusline = options.statuslinePath === undefined ? findWslStatusline(__dirname) : options.statuslinePath;
+  if (statusline) {
+    write(path.join(dir, 'statusline.sh'), WSL_STATUSLINE);
+    write(path.join(dir, 'claude-settings-statusline.json'), JSON.stringify({ hooks: wslClaudeHooks(), statusLine: WSL_STATUSLINE_SETTING }));
+  }
   const mcpEntry = options.mcpEntryPath === undefined
     ? findUp(__dirname, ['mcp-bundle/index.js', 'dist/mcp/mcp/entry.js'])
     : options.mcpEntryPath;
@@ -671,6 +737,11 @@ fi
     WMUX_WSL_BIN: bin,
     WMUX_WSL_BASHRC: path.join(dir, 'bashrc'),
     ...(mcpEntry ? { WMUX_WSL_MCP: mcpEntry, WMUX_WSL_MCP_CONFIG: path.join(dir, 'claude-mcp.json') } : {}),
+    ...(statusline ? {
+      WMUX_WSL_STATUSLINE: statusline,
+      WMUX_WSL_STATUSLINE_SH: path.join(dir, 'statusline.sh'),
+      WMUX_WSL_SETTINGS_STATUSLINE: path.join(dir, 'claude-settings-statusline.json'),
+    } : {}),
   };
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
@@ -678,12 +749,19 @@ fi
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
+    // The script is Windows node's to open (/u: stays a Windows path); the
+    // rest are the distro's to read.
+    ...(statusline ? ['WMUX_WSL_STATUSLINE/u', 'WMUX_WSL_STATUSLINE_SH/p', 'WMUX_WSL_SETTINGS_STATUSLINE/p'] : []),
     // A fan-out or automation pane's claude skips the workspace-trust dialog
     // (shared/agentFirstRun.ts CLAUDE_SANDBOXED_ENV). wsl.exe passes only the
     // variables WSLENV names, so without this Linux claude in a WSL task pane
     // stopped on "Is this a project you created or one you trust?" (#2231).
     // Only a pane that carries it: an ordinary WSL pane keeps the dialog.
     ...(options.env.CLAUDE_CODE_SANDBOXED ? ['CLAUDE_CODE_SANDBOXED/u'] : []),
+    // The same worker pane's DISABLE_AUTOUPDATER (main/worktask/fanoutEnvironment.ts
+    // workerAutoUpdateEnv), so Linux claude in it does not update the launcher
+    // either. Only beside the worker marker: an ordinary WSL pane's env is not sent.
+    ...(options.env.CLAUDE_CODE_SANDBOXED && options.env.DISABLE_AUTOUPDATER !== undefined ? ['DISABLE_AUTOUPDATER/u'] : []),
     // The Claude file send setting (shared/claudeFileSend.ts), when it is on.
     ...(options.env[CLAUDE_FILE_SEND_ENV] ? [`${CLAUDE_FILE_SEND_ENV}/u`] : []),
   ];

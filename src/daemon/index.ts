@@ -58,7 +58,7 @@ import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS, joinWrappedRows } from './web/hostSearch';
-import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
+import { recoveryCwd, isWslShell, isWslCwdMissingError, type WslTarget } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -96,7 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { warmRustSnapshot } from './RustSnapshot';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
+import { queuedComposerRows, queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
@@ -105,7 +105,7 @@ import { isTerminalCoreMissing, TERMINAL_CORE_MISSING, type TerminalPty } from '
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
 import { screenBlocksChatSend, screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog, screenShowsRunningTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
-import { claudeComposerEmpty, claudeComposerVisible } from './transcript/deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerUnseen, claudeComposerVisible } from './transcript/deliverChatPrompt';
 import { CHATV2_LAUNCH_ALLOWED_RPC } from '../shared/chatv2/ipc';
 import { isPaneMoving } from './chat/v2/paneClaims';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -170,6 +170,8 @@ import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2a
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, HEADLESS_PROGRESS_GIT_TIMEOUT_MS, worktreeProgress, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { HeadlessPruneScheduler, mergedChecks } from './a2aRemote/headlessPruneScheduler';
+import { pruneHeadless } from '../cli/commands/headlessPrune';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
@@ -185,7 +187,7 @@ import { A2A_REMOTE_RPC, type A2aRemoteTaskState } from '../shared/a2aRemoteDeli
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -208,6 +210,9 @@ import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
 import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
+import { deliveryFrameOf } from './deliveryComposer';
+import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, releaseScreenRepairLineage, takeScreenCheckpoint } from './screenCheckpoint';
+import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
@@ -343,6 +348,7 @@ import { deliverCallerNudge } from './callerNudgeDelivery';
 import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount, paneShellDeps, wslAccountEnv } from './continueOnAccount';
+import { wslAuthEvidencePlace } from './wslAuthEvidence';
 import { paneFree } from './paneFree';
 import { createOrphanSweep } from './winProcessSweep';
 import { classifyShell } from './shell-integration';
@@ -566,6 +572,7 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 // session RPCs it wraps live), and each side reaches the other through these.
 let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
+let headlessPruneRef: HeadlessPruneScheduler | null = null;
 // Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
 let idleHoldForRemoteStarts: () => boolean = () => false;
 // What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
@@ -605,9 +612,9 @@ let pushBrowserHelp: ((rows: readonly BrowserHelpTableRow[], closed: ReadonlyMap
 /** The pipe client that last published the browser help table (main). */
 let browserHelpPublisher: string | null = null;
 /** N4 — an agent's sign-in was lost (shared/agentAuthLost); set at boot once the pipe server exists. */
-let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string, string> | undefined, origin: AuthLostOrigin, providerCode?: string) => void) | undefined;
+let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string, string> | undefined, origin: AuthLostOrigin, providerCode?: string, wsl?: WslTarget) => void) | undefined;
 /** N4 — an agent and account was seen to work (a confirmed turn end, or its status said signed in). */
-let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined) => void) | undefined;
+let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined, wsl?: WslTarget) => void) | undefined;
 /** N4 — one status probe per agent and account a minute, before a scheduled run and as an agent starts. */
 const agentLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
 /** The check a box runs before it starts an agent for another PC (offlineEnv
@@ -5284,15 +5291,13 @@ function registerRpcHandlers(
           if (!approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id)) return 'Something in this pane waits for an approval.';
           // No watcher, or no watch of this pane's transcript, is "may be working".
           if (!transcriptActivity || transcriptActivity.helpersWorking(id)) return 'Claude\u2019s teammates or subagents may still be working.';
-          const outcome = await queuedScreenText(sessionManager, id, true);
-          const rows = outcome?.ok
-            ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-            : null;
+          const rows = (await queuedComposerRows(sessionManager, id))?.rows ?? null;
           if (screenBlocksChatSend(rows)) return 'A dialog is open in the terminal, or its screen could not be read.';
           if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(pane.bridge.getTitle(), 'claude', Date.now())) {
             return 'Claude is still working. Try once its turn ends.';
           }
           if (!claudeComposerEmpty(rows)) {
+            if (claudeComposerUnseen(rows)) return 'wmux can\u2019t confirm Claude\u2019s input is empty yet. Resize the pane once to redraw it.';
             return claudeComposerVisible(rows) ? 'Claude\u2019s input holds a draft. Send or clear it first.' : 'Claude\u2019s input is not on screen.';
           }
           return null;
@@ -5444,8 +5449,9 @@ function registerRpcHandlers(
         return sessionManager.listManagedSessions().some((other) => other.meta.id !== id && realCwd(other.meta.id) === cwd && liveHermes(other.meta.id));
       },
       readScreen: async (id) => {
-        // Undimmed, so a dim placeholder in the prompt never reads as typed text.
-        const outcome = await queuedScreenText(sessionManager, id, true);
+        // Undimmed, so a dim placeholder in the prompt never reads as typed text. A cell the
+        // read could not see keeps its UNKNOWN_CELL, so it never reads as an empty prompt either.
+        const outcome = await queuedScreenText(sessionManager, id, true, { keepUnknown: true });
         return outcome?.ok ? outcome.rows.map((row) => row.undimmed ?? row.text) : null;
       },
       bracketedPaste: (id) => sessionManager.getSession(id)?.bridge.outputModes?.isSet(2004) === true,
@@ -5545,11 +5551,8 @@ function registerRpcHandlers(
       },
     } : null,
     readScreen: async (id) => {
-      // The composer check tells a dimmed suggested prompt from typed input.
-      const outcome = await queuedScreenText(sessionManager, id, true);
-      return outcome?.ok
-        ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-        : null;
+      // The composer check tells a dimmed suggested prompt from typed input, and an unseen cell from a blank.
+      return (await queuedComposerRows(sessionManager, id))?.rows ?? null;
     },
     atFolderTrust: async (id, writer) => (await trustRefusal(sessionManager, id, writer, false)) !== null,
     agentProcessAlive: async (id, slug) => {
@@ -5750,14 +5753,18 @@ function registerRpcHandlers(
               // A held scheduled run is not final yet: only its final failure notifies.
               if (!shouldPushTurnFailure(transientFailure, () => automationEngine?.armTransientRetry(sessionId, data.decision) === true)) return;
               pushTurnFailed?.(sessionId, f);
-              if (f.reason === 'auth') noteAuthLost?.(sessionId, 'claude', historySession.meta.env, 'turn', f.providerCode);
+              if (f.reason === 'auth') {
+                noteAuthLost?.(sessionId, 'claude', historySession.meta.env, 'turn', f.providerCode,
+                  wslAuthEvidencePlace(historySession.meta, data.signal.agentSessionId, data.signal.payload));
+              }
             },
           })
           : undefined;
         if (data.signal.kind === 'agent.stop' && data.status === 'complete' && historySession
           && isAuthLostAgent(data.signal.agent)
           && !['internal', 'veto', 'pending'].includes(data.decision ?? '')) {
-          noteAuthWorks?.(data.signal.agent, historySession.meta.env);
+          noteAuthWorks?.(data.signal.agent, historySession.meta.env,
+            wslAuthEvidencePlace(historySession.meta, data.signal.agentSessionId, data.signal.payload));
         }
         const failure = served?.failure;
         const liveFailure = served?.current ? served.failure : undefined;
@@ -6507,10 +6514,9 @@ function registerRpcHandlers(
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
     frame: async (sid) => {
-      const outcome = await queuedScreenText(sessionManager, sid, true);
+      const outcome = await queuedScreenText(sessionManager, sid, true, { keepUnknown: true });
       if (!outcome?.ok) return null;
-      const rows = Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
-      return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
+      return deliveryFrameOf(outcome.rows, outcome.rowsBelowCursor);
     },
     platform: process.platform,
     log: (line) => log('info', line),
@@ -6529,6 +6535,45 @@ function registerRpcHandlers(
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+  // A screen checkpoint rebuilt from a ring that had dropped bytes leaves cells Claude never rewrites
+  // unseen, and every composer reader then refuses the pane: one redraw at rest (screenCheckpointRepair.ts).
+  onUnseenScreenCheckpoint((ring, lineage) => {
+    const managed = sessionManager.listManagedSessions().find((s) => s.ringBuffer === ring);
+    if (!managed) return;
+    const id = managed.meta.id;
+    const size = (): { cols: number; rows: number } | null => {
+      const live = sessionManager.getSession(id);
+      return live === managed && live.meta.cols > 0 && live.meta.rows > 0 ? { cols: live.meta.cols, rows: live.meta.rows } : null;
+    };
+    void repairUnseenScreen(lineage, {
+      atRest: () => {
+        const live = sessionManager.getSession(id);
+        if (live !== managed || (live.meta.state !== 'attached' && live.meta.state !== 'detached')) return false;
+        const { bridge } = live;
+        return !bridge.isMuted && !bridge.isTurnOpen() && bridge.getAgentStatus() !== 'running' && bridge.isKeyInputQuiet()
+          && unsentPasteHolds?.held(id) !== true;
+      },
+      composerUnseen: async () => claudeComposerUnseen((await queuedComposerRows(sessionManager, id))?.rows ?? null),
+      size,
+      resizePty: (cols, rows) => {
+        if (sessionManager.getSession(id) !== managed) return;
+        managed.ptyProcess.resize(cols, rows);
+        // The repaint that follows is a resize's, not new output (agent detection's redraw guard).
+        managed.bridge.noteResize();
+      },
+      pause: (on) => pauseScreenCheckpoints(ring, on),
+      refresh: () => {
+        const modes = managed.bridge.outputModes;
+        return modes ? enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size)) : Promise.resolve(false);
+      },
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      noteNudge: noteScreenRepairNudge,
+      log: (line) => log('info', `${line} on pane ${id}`),
+    }).then((outcome) => {
+      // Busy past the repair's wait: the chain's next checkpoint (the long turn writes plenty) asks again.
+      if (outcome === 'gave-up') releaseScreenRepairLineage(lineage);
+    }).catch(() => undefined);
+  });
   // A draft mark the key path left after the draft was erased (Backspace), cleared
   // by a fresh frame of the agent's empty prompt (draftScreen.ts).
   draftOnScreen = draftScreenCheck({
@@ -7036,12 +7081,7 @@ function registerRpcHandlers(
         return tail ? lastHumanPrompt(tail.entries) : null;
       },
       holdKeyboard: () => bridge.holdKeyboard(id),
-      readScreen: async () => {
-        const outcome = await queuedScreenText(sessionManager, id, true);
-        return outcome?.ok
-          ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-          : null;
-      },
+      readScreen: async () => (await queuedComposerRows(sessionManager, id))?.rows ?? null,
       write: (data) => {
         const managed = sessionManager.getSession(id);
         if (!managed || resolveTranscriptBinding(id)?.sessionId !== binding.sessionId) return false;
@@ -9578,6 +9618,7 @@ async function shutdown(
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
+  headlessPruneRef?.stop();
   headlessDeliveryRef?.stop();
   linkedTaskTurnsRef?.stop();
   remoteApprovalsRef?.stop();
@@ -10090,17 +10131,18 @@ async function main(): Promise<void> {
   // account beyond its folder is sent. A loss makes the login gate forget the
   // account and a working turn records it as signed in; either way an answer
   // still in flight from before is not used.
-  noteAuthLost = (sessionId, agent, env, origin, providerCode) => {
+  // `wsl`: the WSL home the signal is evidence about (wslAuthEvidence.ts).
+  noteAuthLost = (sessionId, agent, env, origin, providerCode, wsl) => {
     const configDir = authConfigDir(agent, env);
     agentLoginGate.forget(agent, configDir);
     const lost: AgentAuthLost = { agent, configDir, origin, ...(providerCode ? { providerCode } : {}), at: Date.now() };
     log('info', `[auth] ${sessionId || (origin === 'schedule' ? 'scheduled run' : 'new pane')}: ${agent} is signed out (${origin}${providerCode ? `, ${providerCode}` : ''})`);
-    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId, data: { lost } });
+    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId, data: { lost, ...(wsl ? { wsl } : {}) } });
   };
-  noteAuthWorks = (agent, env) => {
+  noteAuthWorks = (agent, env, wsl) => {
     const configDir = authConfigDir(agent, env);
     agentLoginGate.markWorks(agent, configDir);
-    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId: '', data: { works: { agent, configDir } } });
+    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId: '', data: { works: { agent, configDir }, ...(wsl ? { wsl } : {}) } });
   };
   // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).
   // Subscribed here, not above: that listener runs before `pipeServer` exists.
@@ -10749,7 +10791,7 @@ async function main(): Promise<void> {
   // `copyOnly` (a pane that cannot switch in place): only the copy; main opens the new pane.
   const continueOnAccountRpc = (copyOnly: boolean): Parameters<typeof pipeServer.onRpc>[1] => async (rawParams, ctx) => {
     if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
-    const p = rawParams as { sessionId?: unknown; configDir?: unknown };
+    const p = rawParams as { sessionId?: unknown; configDir?: unknown; wslNewPane?: unknown };
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
     const configDir = typeof p.configDir === 'string' ? p.configDir : '';
     if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
@@ -10855,7 +10897,7 @@ async function main(): Promise<void> {
           pane.bridge.noteInput(data);
           return true;
         },
-      }, id, configDir, { copyOnly });
+      }, id, configDir, { copyOnly, wslNewPane: p.wslNewPane === true });
     } catch {
       return { ok: false, code: 'unknown' };
     }
@@ -11545,7 +11587,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11849,11 +11891,24 @@ async function main(): Promise<void> {
             if (paneGone) await paneGone({ workspaceId, paneId, reason: 'pane-closed' });
           },
           abandon: (hostId, spawnId) => starter.abandon(hostId, spawnId),
-          startEnding: (rec, why) => headlessDelivery.startEnding(rec, why),
+          startEnding: (rec, why) => {
+            headlessPruneRef?.noteStartEnded();
+            return headlessDelivery.startEnding(rec, why);
+          },
           runId: headlessRunId,
           log: a2aLog,
         });
         headlessStarterRef = a2aHeadless;
+        // Ended starts' worktrees whose work is merged go by themselves (a2aRemote/headlessPruneScheduler.ts);
+        // the records are dropped by the starter's reconcile, which owns the store.
+        const pruneGit = (at: string) => gitRunner(at, { env: { GIT_TERMINAL_PROMPT: '0' } });
+        headlessPruneRef = new HeadlessPruneScheduler({
+          active: () => headlessMode.active(),
+          prune: () => pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => true, policy: 'merged' },
+            { git: pruneGit, store: headlessStarts, merged: mergedChecks({ git: pruneGit }) }),
+          log: a2aLog,
+        });
+        headlessPruneRef.start();
         headlessDelivery.start();
         const headless = a2aHeadless;
         sessionManager.on('session:died', (payload: { id: string }) => headless.onSessionGone(payload.id));

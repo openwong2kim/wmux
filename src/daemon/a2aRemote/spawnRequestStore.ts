@@ -11,6 +11,7 @@ import {
   isSpawnCode,
   isSpawnId,
   parseSpawnRequest,
+  spawnBaseNoteLine,
   type A2aSpawnCode,
   type A2aSpawnRequestState,
   type A2aSpawnRequestSummary,
@@ -69,6 +70,8 @@ export interface SpawnRequestRecordV1 {
   endpoint?: { kind: 'pane'; workspaceId: string; paneId: string };
   linkVersion?: number;
   linkId?: string;
+  /** Decided `started` only: why the agent's branch starts at this PC's HEAD instead of the base. */
+  baseNote?: string;
   /** Starting only: when main claimed it (a start that never reports back is ended after a while). */
   claimedAt?: string;
   /** Starting only: the root's path the claim checked; the start must still match it. */
@@ -97,6 +100,8 @@ export interface SpawnStarted {
   endpoint: { kind: 'pane'; workspaceId: string; paneId: string };
   linkVersion: number;
   linkId: string;
+  /** Why the agent's branch starts at this PC's HEAD (spawnBaseNoteLine), for the answer and its resends. */
+  baseNote?: string;
 }
 
 const OPEN: ReadonlySet<A2aSpawnRequestState> = new Set(['pending', 'awaiting', 'approved', 'starting']);
@@ -316,7 +321,7 @@ export class SpawnRequestStore {
       state: 'decided',
       code,
       decidedAt: new Date(this.now()).toISOString(),
-      ...(code === 'started' && started ? { endpoint: { ...started.endpoint }, linkVersion: started.linkVersion, linkId: started.linkId } : {}),
+      ...(code === 'started' && started ? { endpoint: { ...started.endpoint }, linkVersion: started.linkVersion, linkId: started.linkId, ...(started.baseNote ? { baseNote: started.baseNote } : {}) } : {}),
     };
     this.commit((m) => m.set(key(hostId, spawnId), next));
     return structuredClone(next);
@@ -429,6 +434,7 @@ function coerceRecord(raw: unknown): SpawnRequestRecordV1 | null {
   return {
     v: 1, hostId, spawnId, fingerprint, agent: agent as A2aSpawnRequestV1['agent'], rootId, state, code, receivedAt, expiresAt, ...requestExpiresAt, decidedAt, ...approvedAt,
     ...(started ?? {}),
+    ...(started && typeof raw['baseNote'] === 'string' && spawnBaseNoteLine(raw['baseNote']) ? { baseNote: spawnBaseNoteLine(raw['baseNote']) } : {}),
     ...(raw['sent'] === true ? { sent: true as const } : {}),
   };
 }

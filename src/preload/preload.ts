@@ -266,6 +266,7 @@ const chat: ChatBridgeApi = {
 const chatv2: ChatV2BridgeApi = {
   call: (method, params) => ipcRenderer.invoke(CHATV2_IPC[method], params),
   stageAttachment: (path) => ipcRenderer.invoke(CHATV2_IPC.stageAttachment, path),
+  pickAttachments: () => ipcRenderer.invoke(CHATV2_IPC.pickAttachments),
   onEvents: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, push: ChatV2EventsPush) => listener(push);
     ipcRenderer.on(CHATV2_IPC.events, handler);
@@ -357,7 +358,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; launchEnv?: Record<string, string>; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; wslFrom?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; launchEnv?: Record<string, string>; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -662,6 +663,7 @@ const electronAPI = {
     setSecretGuardEnabled: (enabled: boolean) => ipcRenderer.send(IPC.SECRET_GUARD_ENABLED, enabled),
     // #1103 — null clears the choice (back to wsl.exe's system default).
     setDefaultWslDistro: (distro: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_WSL_DISTRO, distro),
+    setDefaultShell: (shell: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_SHELL, shell),
   },
   // Windows "start on login" toggle (issue #460). Backed by the per-user Run
   // registry key. `get`/`set` resolve to the live state; off-Windows both

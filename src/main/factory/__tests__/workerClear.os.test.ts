@@ -41,6 +41,7 @@ beforeEach(() => {
   fs.mkdirSync(wt);
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   setFanOutGuardsForTests(null);
   // A store's fire-and-forget save can still be on its way: let it land
   // before its folder goes, or the removal races it.
@@ -403,6 +404,7 @@ describe('resume of a cleared worker', () => {
 
 describe('FanOutService.spawnBotTaskPane', () => {
   it('spawns on the bot worker path: guarded create, lineage stamp with the bot origin, worker permission mode', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', undefined);
     const guards = new FanOutGuards({ dir, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
     setFanOutGuardsForTests(guards);
     let duringSpawn: ReturnType<typeof botWorkerForCreate> = null;
@@ -423,8 +425,9 @@ describe('FanOutService.spawnBotTaskPane', () => {
     expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
       cwd: wt,
       initialCommand: `claude --resume ${UUID}`,
-      // As on the first launch: a resumed worker skips claude's folder-trust dialog (#2261).
-      env: { CLAUDE_CODE_SANDBOXED: '1' },
+      // As on the first launch: a resumed worker skips claude's folder-trust dialog (#2261),
+      // and its updater stays off (workerAutoUpdateEnv).
+      env: { CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '1' },
       fanoutTaskOf: 'ws-owner',
       fanoutOrigin: { kind: 'bot', botId: BOT, tainted: true, guest: false },
       workerPermissionMode: 'manual',

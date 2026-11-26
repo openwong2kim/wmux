@@ -11,6 +11,9 @@ import {
   normalizeSpawnSub,
   parseSpawnRequest,
   parseSpawnResult,
+  SPAWN_BASE_NOTE_MAX,
+  isSpawnBaseName,
+  spawnBaseNoteLine,
   parseSpawnTargets,
   spawnClockOk,
   spawnTargetsFor,
@@ -155,5 +158,37 @@ describe('the policy', () => {
     expect(JSON.stringify(targets)).not.toContain('/Users');
     expect(spawnTargetsFor({ ...policy, enabled: false }, HOST)).toBeNull();
     expect(spawnTargetsFor(policy, '22222222-2222-4222-8222-222222222222')).toBeNull();
+  });
+});
+
+describe('spawn-base.1 fields', () => {
+  const request = {
+    v: 1, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', folder: { root: 'web' }, text: 'go',
+    expiresAt: '2026-11-27T00:00:00.000Z', from: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' },
+  };
+  const result = {
+    v: 1, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', code: 'started',
+    endpoint: { kind: 'pane', workspaceId: 'ws-b', paneId: 'pane-b' }, linkVersion: 1, linkId: '11111111-1111-4111-8111-111111111111',
+  };
+
+  it('a request takes a plain branch name as its base, and nothing else there', () => {
+    expect(parseSpawnRequest({ ...request, base: 'release/2.0' })?.base).toBe('release/2.0');
+    expect(parseSpawnRequest(request)).not.toHaveProperty('base');
+    for (const bad of ['', '-x', 'a..b', 'a//b', 'a/', 'x.lock', 'a b', 7]) expect(parseSpawnRequest({ ...request, base: bad })).toBeNull();
+  });
+
+  it('a started result takes one line of base note; another code, or a note over lines, is refused', () => {
+    expect(parseSpawnResult({ ...result, baseNote: 'fetch failed; from HEAD' })?.baseNote).toBe('fetch failed; from HEAD');
+    expect(parseSpawnResult({ ...result, baseNote: 'a\nb' })).toBeNull();
+    expect(parseSpawnResult({ ...result, baseNote: 'x'.repeat(SPAWN_BASE_NOTE_MAX + 1) })).toBeNull();
+    expect(parseSpawnResult({ v: 1, spawnId: result.spawnId, code: 'failed', baseNote: 'x' })).toBeNull();
+  });
+
+  it('a note is folded to one line and cut before it is sent', () => {
+    expect(spawnBaseNoteLine('git fetch failed (fatal: x\n  could not read)\t; HEAD')).toBe('git fetch failed (fatal: x could not read) ; HEAD');
+    expect(spawnBaseNoteLine('y'.repeat(900))).toHaveLength(SPAWN_BASE_NOTE_MAX);
+    expect(spawnBaseNoteLine(' \n ')).toBeUndefined();
+    expect(isSpawnBaseName('main')).toBe(true);
+    expect(isSpawnBaseName('release+stable')).toBe(true);
   });
 });
