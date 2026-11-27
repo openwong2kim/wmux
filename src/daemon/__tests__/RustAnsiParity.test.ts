@@ -529,6 +529,9 @@ const resizes: Case[] = [
   // Split there with no resize, the output is the same as unsplit.
   resizedThrough('osc-opener-control-split', [20, 2], [['a\r\nb\x1b\n]2;t', [20, 2]]], '\x07c', 0),
   resizedThrough('csi-control-split', [20, 2], [['a\r\nb\x1b[3\n', [20, 2]]], '1mc', 0),
+  // An ESC ends the OSC it stands in before the control after it.
+  resizedThrough('osc-end-control-then-taller', [20, 2], [['a\r\nb\x1b]2;t\x1b\n', [20, 3]]], '[31mc', 0),
+  resizedThrough('osc-end-control-split', [20, 2], [['a\r\nb\x1b]2;t\x1b\n', [20, 2]]], '[31mc', 0),
   // Colored CJK paragraphs reflowed to 9..20 columns (bench/rust-snapshot-parity.ts).
   ...Array.from({ length: 24 }, (_, i) => i + 1).filter(seed => seed !== 14).map(seed => resized(`reflow-seed-${seed}`,
     Array.from({ length: seed }, (_, i) => `\x1b[3${i % 8}m${'abc\ud55c'.repeat(1 + i % 5)}\x1b[0m`).join('\r\n'),

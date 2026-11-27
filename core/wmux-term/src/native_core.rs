@@ -1574,9 +1574,12 @@ impl XtermFeed {
                     // Both parsers execute a C0 control inside a sequence
                     // where it stands, leaving the sequence's state as it
                     // was: run the held one's now, so a resize before its
-                    // end comes after them (#3466), and hold the rest.
+                    // end comes after them (#3466), and hold the rest. The
+                    // ESC goes first: it ends a string it stands in (an OSC,
+                    // say), where vte ignores a C0 control, as xterm ends it
+                    // there. vte ignores the ESC again when it is replayed.
                     if data[at + 1..].iter().any(|&b| b < 0x20) {
-                        parser.advance(term, &data[from..at]);
+                        parser.advance(term, &data[from..=at]);
                         from = at;
                         self.refuse(self.round_trip, ROUND_TRIP);
                         let (mut read, mut kept) = (at + 1, at + 1);
@@ -2132,9 +2135,9 @@ fn soft_reset_like_xterm(term: &mut Term<VoidListener>) {
 /// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
 /// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
 /// DEL between the ESC and its final byte. An ESC still waiting for that byte
-/// at the end of `bytes` waits in `held` with the DEL after it, the C0
-/// controls run, up to MAX_HELD bytes as XtermFeed holds; past that it goes
-/// to the parser as is.
+/// at the end of `bytes` goes to the parser, which ends a string it stands
+/// in, and waits in `held` with the DEL after it, the C0 controls run, up to
+/// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
 ///
 /// A refused join returns before anything is parsed; nothing else allocates.
 fn advance_indexing(
@@ -2165,7 +2168,9 @@ fn advance_indexing(
         }
         match bytes.get(end) {
             None if bytes.len() - esc <= MAX_HELD => {
-                parser.advance(term, &bytes[from..esc]);
+                // The ESC goes on, ending a string it stands in, where vte
+                // ignores a C0 control; replayed, vte ignores it.
+                parser.advance(term, &bytes[from..=esc]);
                 // The C0 controls after it run now, where both parsers run
                 // them, so a resize before its final byte comes after them
                 // (#3466); the ESC and any DEL wait, within the MAX_HELD
@@ -5978,6 +5983,8 @@ mod osc_cap_tests {
             for (first, rest) in [
                 (b"a\r\nb\x1b\n]2;t".as_slice(), b"\x07".as_slice()),
                 (b"a\r\nb\x1b[3\n".as_slice(), b"1m".as_slice()),
+                // The ESC ends the OSC before the LF, which vte ignores in it.
+                (b"a\r\nb\x1b]2;t\x1b\n".as_slice(), b"[31m".as_slice()),
             ] {
                 let feed = |terminal: &mut NativeTerminal, bytes: &[u8]| {
                     if xterm {
@@ -5997,6 +6004,16 @@ mod osc_cap_tests {
                 assert_eq!(shown, text(&mut whole), "xterm {xterm}: {first:?}");
                 assert!(!shown.iter().any(|row| row.contains('a')), "{shown:?}");
             }
+            // Split there with no resize, as unsplit.
+            let mut split = NativeTerminal::create(20, 3, 0).unwrap();
+            for bytes in [b"a\x1b]2;old\x1b\n".as_slice(), b"[31mb"] {
+                if xterm {
+                    split.feed_xterm_bytes(bytes, 0).unwrap();
+                } else {
+                    split.feed_bytes(bytes).unwrap();
+                }
+            }
+            assert_eq!(text(&mut split), ["a", " b"], "xterm {xterm}");
         }
     }
 
