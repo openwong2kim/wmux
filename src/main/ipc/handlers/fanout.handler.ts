@@ -309,7 +309,55 @@ export function registerFanOutHandler(service: FanOutService): () => void {
  * composer): the click is the approval, and the audit log still records the
  * run with the same no-record-no-run rule as the wire.
  */
-export async function startGuiFanOut(service: FanOutService, req: FanOutRequest): Promise<FanOutResult> {
+export async function startGuiFanOut(service: FanOutService, rawReq: FanOutRequest): Promise<FanOutResult> {
+  const repo = guiRepoPath(rawReq.repoPath);
+  if ('error' in repo) {
+    console.warn(`[fanout] gui start refused: ${repo.error}`);
+    return { ok: false, error: repo.error, tasks: [] };
+  }
+  const req = repo.repoPath === rawReq.repoPath ? rawReq : { ...rawReq, repoPath: repo.repoPath };
+  const result = await runGuiFanOut(service, req);
+  // #3514 — a refused start used to leave no trace in the main log.
+  if (!result.ok && result.error) console.warn(`[fanout] gui start on ${req.repoPath} refused: ${result.error}`);
+  return result;
+}
+
+/**
+ * #3514 — the repository folder a GUI fan-out runs on. On Windows a WSL-form
+ * path (`/mnt/d/src/x`) names a Windows folder (`D:\src\x`): it is mapped
+ * when that folder exists, and refused with the reason when it does not
+ * (resolved as given, it became `C:\mnt\d\…`). Every other path, and every
+ * path off Windows, is kept as given. Logs a mapping or a refusal.
+ */
+export function guiRepoPath(
+  repoPath: string,
+  platform: NodeJS.Platform = process.platform,
+  inspect: (p: string) => string = inspectFolder,
+): { repoPath: string } | { error: string } {
+  if (platform !== 'win32') return { repoPath };
+  const m = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(repoPath.trim());
+  if (!m) return { repoPath };
+  const mapped = `${m[1].toUpperCase()}:\\${(m[2] ?? '').replace(/\/+/g, '\\').replace(/\\$/, '')}`;
+  const state = inspect(mapped);
+  if (state !== 'directory') {
+    const why = state === 'missing' ? 'does not exist' : state === 'not-directory' ? 'is not a folder' : `could not be read (${state})`;
+    return { error: `fanout:start: ${repoPath} is a WSL path, and its Windows folder ${mapped} ${why}; give the repository as a Windows path` };
+  }
+  console.log(`[fanout] repository ${repoPath} mapped to ${mapped}`);
+  return { repoPath: mapped };
+}
+
+/** 'directory' | 'missing' | 'not-directory', or the error code that kept it from being read. */
+function inspectFolder(p: string): string {
+  try {
+    return fs.statSync(p).isDirectory() ? 'directory' : 'not-directory';
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : code ?? 'unknown error';
+  }
+}
+
+async function runGuiFanOut(service: FanOutService, req: FanOutRequest): Promise<FanOutResult> {
   const guards = getFanOutGuards();
   const workerMode = loadFanoutWorkerPermissionMode();
   const base = {

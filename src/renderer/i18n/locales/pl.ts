@@ -1465,6 +1465,7 @@ export const pl = {
   'terminal.catchingUp': 'nadrabianie…',
   'terminal.staleScreen': 'ekran może być nieaktualny — ponowię próbę',
   'terminal.reattaching': 'ponowne łączenie…',
+  'terminal.cwdMissingHome': '{folder} już nie istnieje, więc ten terminal otwarto w folderze domowym.',
   'terminal.createFailed': 'Nie udało się uruchomić tego terminala.',
   'terminal.retryCreate': 'Spróbuj ponownie',
   'terminal.notStarted': 'Uruchomi się po otwarciu',

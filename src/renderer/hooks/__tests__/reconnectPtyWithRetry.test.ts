@@ -355,3 +355,14 @@ describe('reconnectPtyWithRetry — an attach that started the session (#2398)',
     expect(onRecoveryError).toHaveBeenCalledWith(null);
   });
 });
+
+// #3443 — a daemon-recovered session whose folder was gone started in home;
+// the reconnect that attaches it is where the pane learns which folder.
+describe('reconnectPtyWithRetry — lost folder', () => {
+  it('hands the lost folder of an attached session to onLostCwd', async () => {
+    const onLostCwd = vi.fn();
+    const reconnect = vi.fn(async () => ({ success: true, lostCwd: '/gone/project' }));
+    await reconnectPtyWithRetry('pty-home', alwaysCurrent, { reconnect, clearPtyId: vi.fn(), onLostCwd, sleep: noSleep, log: noLog });
+    expect(onLostCwd).toHaveBeenCalledWith('pty-home', '/gone/project');
+  });
+});

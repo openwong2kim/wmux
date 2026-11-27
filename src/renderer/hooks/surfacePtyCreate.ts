@@ -19,10 +19,13 @@ import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
 import { resolveRespawnCwd, shouldHealSurfaceCwd, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import { isTerminalSurfaceType } from '../components/Pane/surfaceKinds';
 import { attachForWrite } from './useTerminal';
+import { noticeMissingCwd } from './missingCwdNotice';
 
 export interface SurfacePtyCreated {
   id: string;
   cwd?: string;
+  /** #3443 — the folder this create wanted, gone, so main started in home. */
+  missingCwd?: string;
 }
 
 /**
@@ -121,6 +124,7 @@ export function surfaceCreate(
       );
     },
     heal: (created) => {
+      noticeMissingCwd(created.id, created.missingCwd);
       // Heal the surface's tracked cwd to what main actually spawned in, so a
       // contaminated-home surface.cwd is corrected the moment it respawns and a
       // later split seeds from the real dir (issue #515). The ptyId is bound

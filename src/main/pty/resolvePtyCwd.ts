@@ -9,6 +9,12 @@ export interface ResolvedPtyCwd {
   incomingCwd?: string;
   safeCwd?: string;
   source: PtyCwdSource;
+  /**
+   * #3443 — the folder this create wanted that no longer exists, set only
+   * when no folder validated and the pane starts in home instead. A UNC path
+   * or a file is dropped too, but is not "gone", so it is not named here.
+   */
+  missingCwd?: string;
 }
 
 /** Validate and resolve a renderer-provided cwd. Returns undefined if invalid. */
@@ -25,6 +31,20 @@ export function validatePtyCwd(cwd: string | undefined): string | undefined {
     return undefined;
   }
   return resolved;
+}
+
+/** Whether `cwd` names a folder that no longer exists (nothing at that path). */
+export function isMissingFolder(cwd: string | undefined): boolean {
+  if (!cwd) return false;
+  const resolved = path.resolve(cwd);
+  if (resolved.startsWith('\\\\')) return false;
+  try {
+    fs.statSync(resolved);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
 }
 
 export function validatePtyCwdForShell(cwd: string | undefined, shell?: string): string | undefined {
@@ -49,6 +69,7 @@ export function resolvePtyCreateCwd(
   requestedCwd: string | undefined,
   recovery: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd'> | undefined,
   validate: (cwd: string | undefined) => string | undefined = validatePtyCwd,
+  missing: (cwd: string | undefined) => boolean = isMissingFolder,
 ): ResolvedPtyCwd {
   if (recovery !== undefined) {
     const liveCwd = validate(recovery.cwd);
@@ -61,16 +82,21 @@ export function resolvePtyCreateCwd(
       return { incomingCwd: recovery.spawnCwd, safeCwd: spawnCwd, source: 'recovery-spawnCwd' };
     }
 
+    // The live folder is named first: it is where the pane last was.
+    const missingCwd = [recovery.cwd, recovery.spawnCwd].find((c) => missing(c));
     return {
       incomingCwd: recovery.spawnCwd ?? recovery.cwd,
       source: 'recovery-home',
+      ...(missingCwd ? { missingCwd } : {}),
     };
   }
 
+  const safeCwd = validate(requestedCwd);
   return {
     incomingCwd: requestedCwd,
-    safeCwd: validate(requestedCwd),
+    safeCwd,
     source: 'requested',
+    ...(!safeCwd && requestedCwd && missing(requestedCwd) ? { missingCwd: requestedCwd } : {}),
   };
 }
 

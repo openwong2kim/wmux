@@ -782,6 +782,14 @@ function logCwdResolution(
   console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why}, source=${source})`);
 }
 
+/**
+ * #3443 — a create whose folder is gone names it on its result, so the pane
+ * can say once that it opened in home instead. Absent otherwise.
+ */
+export function missingCwdResult(resolution: ResolvedPtyCwd): { missingCwd?: string } {
+  return resolution.missingCwd && !resolution.safeCwd ? { missingCwd: resolution.missingCwd } : {};
+}
+
 // Per main process, across handler registrations (daemon generations): a
 // second ring flush of a session reaches the renderer reset-led, so it
 // repaints the pane instead of repeating it (replayResetGate.ts).
@@ -1457,7 +1465,7 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      return { id: sessionId, shell, cwd: effectiveCwd, ...paneFenceResult(paneFence) };
+      return { id: sessionId, shell, cwd: effectiveCwd, ...missingCwdResult(cwdResolution), ...paneFenceResult(paneFence) };
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
@@ -1608,7 +1616,7 @@ export function registerPTYHandlers(
           initialCmd.onFirstData();
         });
       }
-      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...paneFenceResult(paneFence) };
+      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...missingCwdResult(cwdResolution), ...paneFenceResult(paneFence) };
     }));
   }
 
@@ -2220,6 +2228,7 @@ export function registerPTYHandlers(
           holdReason?: 'terminal-core-missing';
           incarnationId?: string;
           startPending?: boolean;
+          lostCwd?: string;
         }>;
         if (!sessions.some(s => s.id === id)) {
           sessions = await daemonClient.rpc('daemon.listSessions', { includeSuspended: true }) as typeof sessions;
@@ -2358,7 +2367,7 @@ export function registerPTYHandlers(
         recordPtyShell(session.id, session.cmd);
         // The session's stored geometry: a hidden pane cannot measure its own,
         // so it adopts this one instead (see the reattach in useTerminal).
-        return { success: true, id: session.id, shell: session.cmd, cols: session.cols, rows: session.rows, ...startedHere() };
+        return { success: true, id: session.id, shell: session.cmd, cols: session.cols, rows: session.rows, ...(typeof session.lostCwd === 'string' && session.lostCwd ? { lostCwd: session.lostCwd } : {}), ...startedHere() };
       } catch (err) {
         // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).
         // This is a transient infrastructure failure, NOT proof the session is

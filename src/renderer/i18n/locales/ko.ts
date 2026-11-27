@@ -1230,6 +1230,7 @@ export const ko = {
   'terminal.catchingUp': '동기화 중…',
   'terminal.staleScreen': '화면이 최신이 아닐 수 있음 — 재시도 예정',
   'terminal.reattaching': '다시 연결하는 중…',
+  'terminal.cwdMissingHome': '{folder} 폴더가 더 이상 없어 이 터미널을 홈 폴더에서 열었습니다.',
   'terminal.createFailed': '이 터미널을 시작하지 못했습니다.',
   'terminal.retryCreate': '다시 시도',
   'terminal.notStarted': '열면 시작됩니다',
