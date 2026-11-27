@@ -113,7 +113,8 @@ function ToastItem({
           type="button"
           onClick={jumpToTarget}
           title={t('toast.goToTerminal')}
-          className="flex-1 leading-snug text-left cursor-pointer bg-transparent border-0 p-0 text-inherit hover:underline"
+          className="flex-1 min-w-0 leading-snug text-left cursor-pointer bg-transparent border-0 p-0 text-inherit hover:underline"
+          style={{ overflowWrap: 'anywhere' }}
         >
           {message}
         </button>

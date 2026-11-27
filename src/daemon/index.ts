@@ -1498,13 +1498,24 @@ function recoveryCwdLogged(session: { id?: string; cmd: string; cwd: string }): 
   const cwd = recoveryCwd(session);
   if (isWslShell(session.cmd) && cwd !== session.cwd) {
     log('warn', `[recovery] ${session.id ?? 'session'}: stored WSL cwd ${JSON.stringify(session.cwd)} cannot be entered; starting in ${cwd}`);
-  } else if (session.cwd && cwd !== session.cwd && !isUncOrDevicePath(session.cwd) && !fs.existsSync(session.cwd)) {
+  } else if (session.cwd && cwd !== session.cwd && !isUncOrDevicePath(session.cwd) && folderIsGone(session.cwd)) {
     // #3443 — a plain pane whose folder is gone: listed with `lostCwd` so
     // its pane can say once where it was.
     log('warn', `[recovery] ${session.id ?? 'session'}: stored cwd ${JSON.stringify(session.cwd)} no longer exists; starting in ${cwd}`);
     if (session.id) recoveredLostCwd.set(session.id, session.cwd);
   }
   return cwd;
+}
+
+/** Gone, not merely unreadable: a permission error is not a missing folder. */
+function folderIsGone(dir: string): boolean {
+  try {
+    fs.statSync(dir);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
 }
 
 function log(level: string, msg: string, ...args: unknown[]): void {
@@ -8465,6 +8476,7 @@ function wireEvents(
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop a stale resume hint
     recoveredResumeBindings.delete(payload.id); // X6 ③: ...and its exact binding (id reuse, CodeRabbit)
     spendContinue(sessionManager, stateWriter, payload.id);
+    recoveredLostCwd.delete(payload.id);
     // M1: drop the dedup ledger + hook authority for the dead pane. Without
     // this the ledger accrues dead-id entries over a long daemon lifetime, and
     // a reused id would inherit a hook veto that suppresses its detector.
@@ -9139,6 +9151,8 @@ function wireEvents(
   // pane is the user's and its old turn is not continued on its own.
   sessionManager.on('session:inputSubmitted', (payload: { sessionId: string }) => {
     spendContinue(sessionManager, stateWriter, payload.sessionId);
+    // #3443 — the pane is in use: its lost-folder notice has been seen (or is moot).
+    recoveredLostCwd.delete(payload.sessionId);
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
@@ -9160,6 +9174,7 @@ function wireEvents(
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     spendContinue(sessionManager, stateWriter, payload.id);
+    recoveredLostCwd.delete(payload.id);
     // #2493: a closed pane's old disk-only record must not come back on the next save.
     diskOnlySessions = diskOnlySessions.filter((s) => s.id !== payload.id);
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority

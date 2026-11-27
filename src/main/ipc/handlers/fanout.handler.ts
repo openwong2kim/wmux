@@ -332,17 +332,29 @@ export async function startGuiFanOut(service: FanOutService, rawReq: FanOutReque
 export function guiRepoPath(
   repoPath: string,
   platform: NodeJS.Platform = process.platform,
-  isDirectory: (p: string) => boolean = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+  inspect: (p: string) => string = inspectFolder,
 ): { repoPath: string } | { error: string } {
   if (platform !== 'win32') return { repoPath };
   const m = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(repoPath.trim());
   if (!m) return { repoPath };
   const mapped = `${m[1].toUpperCase()}:\\${(m[2] ?? '').replace(/\/+/g, '\\').replace(/\\$/, '')}`;
-  if (!isDirectory(mapped)) {
-    return { error: `fanout:start: ${repoPath} is a WSL path, and its Windows folder ${mapped} does not exist; give the repository as a Windows path` };
+  const state = inspect(mapped);
+  if (state !== 'directory') {
+    const why = state === 'missing' ? 'does not exist' : state === 'not-directory' ? 'is not a folder' : `could not be read (${state})`;
+    return { error: `fanout:start: ${repoPath} is a WSL path, and its Windows folder ${mapped} ${why}; give the repository as a Windows path` };
   }
   console.log(`[fanout] repository ${repoPath} mapped to ${mapped}`);
   return { repoPath: mapped };
+}
+
+/** 'directory' | 'missing' | 'not-directory', or the error code that kept it from being read. */
+function inspectFolder(p: string): string {
+  try {
+    return fs.statSync(p).isDirectory() ? 'directory' : 'not-directory';
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : code ?? 'unknown error';
+  }
 }
 
 async function runGuiFanOut(service: FanOutService, req: FanOutRequest): Promise<FanOutResult> {
