@@ -84,10 +84,17 @@ describe('workspace groups', () => {
     expect(store.getState().workspaces.every((w) => w.groupId === undefined)).toBe(true);
   });
 
-  it('expands a folded group when a workspace is moved into it', () => {
+  it('keeps a folded group folded when a workspace is moved into it (#3273)', () => {
     const g = store.getState().createWorkspaceGroup('One')!;
     store.getState().setWorkspaceGroupCollapsed(g, true);
     expect(store.getState().workspaceGroups[0].collapsed).toBe(true);
+    store.getState().moveWorkspaceToGroup(c.id, g);
+    expect(store.getState().workspaces.find((w) => w.id === c.id)?.groupId).toBe(g);
+    expect(store.getState().workspaceGroups[0].collapsed).toBe(true);
+  });
+
+  it('keeps an open group open when a workspace is moved into it', () => {
+    const g = store.getState().createWorkspaceGroup('One')!;
     store.getState().moveWorkspaceToGroup(c.id, g);
     expect(store.getState().workspaceGroups[0].collapsed).toBeUndefined();
   });

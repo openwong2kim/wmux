@@ -212,6 +212,84 @@ fn shrink_reflow_records_added_rows() {
     assert_eq!(grid.narrowing_added, 0);
 }
 
+/// wmux: without reflow (the alternate screen) a soft-wrapped row stays
+/// wrapped across a width change, as xterm's line does: the flag moves to the
+/// new last cell, and the kept cells come back without it.
+#[test]
+fn resize_without_reflow_keeps_the_wrap() {
+    let mut grid = Grid::<Cell>::new(2, 4, 0);
+    for (x, c) in "abc".chars().enumerate() {
+        grid[Line(0)][Column(x)] = cell(c);
+    }
+    grid[Line(0)][Column(3)] = wrap_cell('d');
+    grid[Line(1)][Column(0)] = cell('e');
+
+    grid.resize(false, 2, 2);
+    assert!(grid[Line(0)][Column(1)].flags.contains(Flags::WRAPLINE));
+
+    grid.resize(false, 2, 6);
+    let row = &grid[Line(0)];
+    assert_eq!((0..4).map(|x| row[Column(x)].c).collect::<String>(), "abcd");
+    assert!(!row[Column(1)].flags.contains(Flags::WRAPLINE));
+    assert!(!row[Column(3)].flags.contains(Flags::WRAPLINE));
+    assert!(row[Column(5)].flags.contains(Flags::WRAPLINE));
+    assert!(!grid[Line(1)][Column(5)].flags.contains(Flags::WRAPLINE));
+}
+
+/// wmux: fewer rows drop those below the cursor, as xterm pops them; the row
+/// left at the bottom no longer continues into one, so it is not wrapped.
+#[test]
+fn shrink_lines_drops_the_wrap_into_a_dropped_row() {
+    let mut grid = Grid::<Cell>::new(3, 2, 0);
+    grid[Line(1)][Column(0)] = cell('a');
+    grid[Line(1)][Column(1)] = wrap_cell('b');
+    grid[Line(2)][Column(0)] = cell('c');
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(false, 2, 2);
+    assert_eq!(grid[Line(1)][Column(0)], cell('a'));
+    assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
+    // The rows come back blank, not as a continuation.
+    grid.resize(false, 3, 2);
+    assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
+}
+
+/// wmux: an erase's empty run in the cells kept past a narrower width (the
+/// alternate screen) is still unwritten once a widen shows them again,
+/// whether the run started in the visible cells or in the kept ones.
+#[test]
+fn grow_without_reflow_keeps_the_erase_in_kept_cells() {
+    use crate::vte::ansi::{Color, NamedColor};
+    for narrow in [3, 2, 1] {
+        let mut grid = Grid::<Cell>::new(1, 6, 0);
+        grid[Line(0)][Column(0)] = cell('a');
+        grid[Line(0)][Column(1)] = cell('b');
+        let mut bg = Cell::default();
+        bg.bg = Color::Named(NamedColor::Green);
+        for x in 2..6 {
+            grid[Line(0)][Column(x)] = bg.clone();
+        }
+        grid[Line(0)].mark_erased_from(2);
+        grid.resize(false, 1, narrow);
+        grid.resize(false, 1, 6);
+        assert_eq!(grid[Line(0)].empty_from(), Some(2), "narrowed to {narrow}");
+        assert_eq!(grid[Line(0)][Column(1)], cell('b'));
+        assert_eq!(grid[Line(0)][Column(4)].bg, Color::Named(NamedColor::Green));
+    }
+}
+
+/// wmux: and dropping that wrap leaves an erased row's empty run as it was:
+/// the row still replays as erased, not as printed blanks.
+#[test]
+fn shrink_lines_keeps_the_erased_run_of_the_row_left_at_the_bottom() {
+    let mut grid = Grid::<Cell>::new(3, 2, 0);
+    grid[Line(1)].put_wrap();
+    grid[Line(1)].mark_erased_from(0);
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(false, 2, 2);
+    assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
+    assert_eq!(grid[Line(1)].empty_from(), Some(0));
+}
+
 /// wmux: a grid of `lines` rows at 4 columns, each row of `text` written from
 /// its first column, the cursor on the top row, no history.
 fn rows_at_four(text: &[&str]) -> Grid<Cell> {
@@ -530,10 +608,14 @@ fn grow_reflow_disabled() {
 
     assert_eq!(grid.total_lines(), 2);
 
+    // wmux: the wrap flag moves to the new last cell, as xterm keeps the
+    // line wrapped (`resize_without_reflow_keeps_the_wrap`).
     assert_eq!(grid[Line(0)].len(), 3);
     assert_eq!(grid[Line(0)][Column(0)], cell('1'));
-    assert_eq!(grid[Line(0)][Column(1)], wrap_cell('2'));
-    assert_eq!(grid[Line(0)][Column(2)], Cell::default());
+    assert_eq!(grid[Line(0)][Column(1)], cell('2'));
+    let mut wrapped_blank = Cell::default();
+    wrapped_blank.flags.insert(Flags::WRAPLINE);
+    assert_eq!(grid[Line(0)][Column(2)], wrapped_blank);
 
     assert_eq!(grid[Line(1)].len(), 3);
     assert_eq!(grid[Line(1)][Column(0)], cell('3'));

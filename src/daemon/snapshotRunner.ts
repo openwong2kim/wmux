@@ -42,6 +42,8 @@ export function createSnapshotRunner(
 ): () => Promise<void> {
   let running = false;
   let pendingRerun = false;
+  // #3247: warn once per unreadable stretch, not every tick.
+  let unreadableWarned = false;
   // ── app-weight P1-5: dirty-only dumps ────────────────────────────────────
   // `.buf` dumps used to rewrite EVERY live session's ring (up to 8 MB each)
   // every tick even when nothing changed — pure SSD churn at idle. Track the
@@ -132,22 +134,35 @@ export function createSnapshotRunner(
           // permanently drop recovery-cap-skipped suspended sessions that
           // exist only in this file — so on primary failure we walk the same
           // .bak rotation load() uses before giving up.
-          let onDisk: DaemonSession[] = [];
+          let onDisk: DaemonSession[] | null = null;
+          let slotPresent = false;
           const primary = stateWriter.getFilePath();
           for (const file of [primary, ...BACKUP_SUFFIXES.map((s) => `${primary}${s}`)]) {
             try {
               const parsed = JSON.parse(await fsp.readFile(file, 'utf-8')) as
                 | { sessions?: DaemonSession[] }
                 | null;
+              slotPresent = true;
               if (parsed && Array.isArray(parsed.sessions)) {
                 onDisk = parsed.sessions;
                 break;
               }
-            } catch {
-              // Absent/unreadable/corrupt slot — try the next backup. All
-              // slots failing means a true first save: nothing to preserve.
+            } catch (err) {
+              // Absent/unreadable/corrupt slot — try the next backup.
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') slotPresent = true;
             }
           }
+          // #3247: only a file with no slot on disk at all is a first save.
+          // Slots that exist but all fail to read would save the live panes
+          // over the sessions only that file holds; skip this tick instead.
+          if (onDisk === null && slotPresent) {
+            if (!unreadableWarned) {
+              snapshotLog('warn', `Snapshot: ${primary} and its backups could not be read — skipping the state save until they can`);
+              unreadableWarned = true;
+            }
+            continue;
+          }
+          unreadableWarned = false;
 
           // Capture the live sessions AFTER the await above (codex review):
           // a cwd/lifecycle event that persisted DURING the read would
@@ -155,7 +170,7 @@ export function createSnapshotRunner(
           // re-opening the reboot-loss window until the next tick.
           const liveSessions = sessionManager.listSessions();
           const liveIds = new Set(liveSessions.map((s) => s.id));
-          const preserved = onDisk.filter(
+          const preserved = (onDisk ?? []).filter(
             (s) => s && typeof s.id === 'string' && !liveIds.has(s.id),
           );
           const merged: DaemonState = {

@@ -43,6 +43,23 @@ export function screenBlocksChatSend(rows: readonly string[] | null): boolean {
     || showsScreenReaderKeyRow(rows);
 }
 
+/** Claude Code's session survey choices (`1: Bad    2: Fine   3: Good   0: Dismiss`): it takes a digit typed at an empty prompt. */
+const CLAUDE_SURVEY_CHOICES = /\b1: Bad\s+2: Fine\s+3: Good\s+0: Dismiss\b/;
+/** How far above the composer's top rule the survey is looked for (its choices, a blank row, a notice row). */
+const CLAUDE_SURVEY_ROWS = 4;
+
+/**
+ * Claude's session survey ("How is Claude doing this session?") is up over
+ * the composer whose prompt row is `promptRow`: Claude draws its choices in
+ * the rows right above the composer's top rule, and a digit typed at the
+ * empty prompt answers it. A survey further up the transcript was answered
+ * long ago and is not the pane's state.
+ */
+export function claudeSurveyOver(rows: readonly string[], promptRow: number): boolean {
+  if (promptRow < 1) return false;
+  return rows.slice(Math.max(0, promptRow - 1 - CLAUDE_SURVEY_ROWS), promptRow - 1).some((row) => CLAUDE_SURVEY_CHOICES.test(row));
+}
+
 /**
  * Claude Code's live spinner row: a spinner glyph, a gerund ending in `…`, and
  * a parenthesised counter carrying elapsed time or tokens, e.g.

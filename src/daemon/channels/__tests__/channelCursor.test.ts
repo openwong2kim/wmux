@@ -10,6 +10,7 @@ function makeWriter(initial?: ChannelState) {
   let failNext = false;
   let last: ChannelState | null = initial ? structuredClone(initial) : null;
   return {
+    loadWithStatus() { return { status: 'loaded' as const, state: this.load() }; },
     load: (): ChannelState =>
       last
         ? structuredClone(last)

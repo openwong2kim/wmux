@@ -45,6 +45,7 @@ function makeWriter() {
       return true;
     }),
     saveDebounced: vi.fn(),
+    loadWithStatus() { return { status: 'loaded' as const, state: this.load() }; },
     load: vi.fn((): ChannelState => (lastSaved ? JSON.parse(JSON.stringify(lastSaved)) as ChannelState : fresh())),
   };
 }

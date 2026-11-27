@@ -103,6 +103,15 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    ~/.copilot/hooks/wmux.json ($COPILOT_HOME/hooks/wmux.json
                    when COPILOT_HOME is set; run it with the same COPILOT_HOME
                    Copilot uses) and never edits your settings.
+  --agent omp      The same for Oh My Pi: wmux copies its own extension to
+                   ~/.omp/agent/extensions/wmux.js
+                   ($PI_CODING_AGENT_DIR/extensions/wmux.js when set); it
+                   runs the shared bridge on omp's lifecycle events.
+  --agent jcode    The same for jcode: wmux adds its command to the
+                   session_start, turn_start, turn_end and session_end keys of
+                   [hooks] in ~/.jcode/config.toml ($JCODE_HOME/config.toml
+                   when set), next to your own. A file it cannot edit without
+                   losing comments is left alone, and the lines are printed.
   --reprobe        With --agent, on install: run the native hook bridge's
                    check again for a build already recorded as failing it (or
                    passing it). If the copy cannot be started at all (a home
@@ -2240,7 +2249,10 @@ async function handleCompatAgentHooks(
   const flavours = await import('../../shared/hooks/hookFlavours');
   const installer = await import('../../shared/hooks/compatHookInstall');
   const flavour = args[agentIndex + 1];
-  const wired = flavours.COMPAT_HOOK_FLAVOUR_IDS.filter((id) => flavours.COMPAT_HOOK_FLAVOURS[id].install?.strategy === 'owned-file');
+  const wired = flavours.COMPAT_HOOK_FLAVOUR_IDS.filter((id) => {
+    const strategy = flavours.COMPAT_HOOK_FLAVOURS[id].install?.strategy;
+    return strategy === 'owned-file' || strategy === 'owned-module' || strategy === 'toml-hooks';
+  });
   if (!flavours.isCompatHookFlavourId(flavour) || !wired.includes(flavour)) {
     console.error(
       `--agent needs one of: ${wired.join(', ')}. Other Claude-compatible CLIs are set up by hand; ` +
@@ -2270,11 +2282,12 @@ async function handleCompatAgentHooks(
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printAssetStatus('shared hooks bridge', outcome.bridge);
+      if (outcome.entry) printAssetStatus(`${flavour} entry point`, outcome.entry);
       console.log(outcome.nativeSummary);
       // Say so when an env var (COPILOT_HOME) chose the directory, so the
       // path is not mistaken for the default one.
       const install = flavours.COMPAT_HOOK_FLAVOURS[flavour].install;
-      const envName = install?.strategy === 'owned-file' ? install.configDirEnv : null;
+      const envName = install && install.strategy !== 'settings-hooks-key' ? install.configDirEnv : null;
       const from = outcome.configDirSource === 'env' && envName ? `, from ${envName}` : '';
       console.log(`${flavour} hooks: ${outcome.config} (${outcome.configPath}${from})`);
       if (outcome.verified === 'docs') {
@@ -2287,8 +2300,11 @@ async function handleCompatAgentHooks(
     const outcome = installer.removeCompatHooks(flavour, paths);
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
+    } else if (outcome.manualLines) {
+      console.warn(`${flavour} hooks: ${outcome.configPath} could not be edited safely; left untouched. In its [hooks] table:`);
+      for (const line of outcome.manualLines) console.warn(`  ${line}`);
     } else if (outcome.removed) {
-      console.log(`${flavour} hooks: removed ${outcome.configPath}`);
+      console.log(`${flavour} hooks: removed ${flavours.COMPAT_HOOK_FLAVOURS[flavour].install?.strategy === 'toml-hooks' ? "wmux's commands from " : ''}${outcome.configPath}`);
     } else if (outcome.before === 'foreign' || outcome.before === 'malformed') {
       console.warn(`${flavour} hooks: ${outcome.configPath} is not wmux's (${outcome.before}); left untouched`);
     } else {
@@ -2305,6 +2321,10 @@ async function handleCompatAgentHooks(
     if (outcome.nativeSummary) console.log(outcome.nativeSummary);
     if (outcome.before === 'foreign' || outcome.before === 'malformed') {
       console.warn(`${flavour} hooks: ${outcome.configPath} is not wmux's (${outcome.before}); left untouched`);
+    } else if (outcome.manualLines) {
+      // Never rewrite a file whose comments or layout an edit would lose.
+      console.warn(`${flavour} hooks: ${outcome.configPath} could not be edited safely; nothing written. Set these in its [hooks] table, keeping your own commands in each array:`);
+      for (const line of outcome.manualLines) console.warn(`  ${line}`);
     } else if (outcome.action === 'none' && outcome.ok) {
       console.log(`${flavour} hooks: already written (${outcome.configPath})`);
     } else if (outcome.ok) {

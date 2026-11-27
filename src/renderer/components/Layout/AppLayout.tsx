@@ -40,6 +40,7 @@ import FileTreePanel from '../FileTree/FileTreePanel';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
 import CloseTabConfirm from '../Pane/CloseTabConfirm';
+import ScratchDropConfirm from '../Editor/ScratchDropConfirm';
 import { isWorkSurfaceType } from '../Pane/surfaceKinds';
 import { forgetAutoResumeClaims } from '../Pane/Pane';
 import { hydrateWithRetry } from './resumeHydrateRetry';
@@ -2443,6 +2444,7 @@ export default function AppLayout() {
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
       {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}
       <CloseTabConfirm />
+      <ScratchDropConfirm />
       <ProjectConfigDialog />
       <WorkspacePrepDialog />
       {/* Voice dictation: the model consent, Esc to cancel, failure toasts. */}

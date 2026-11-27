@@ -23,7 +23,9 @@ function fakePty() {
       onData: (cb: (chunk: string) => void) => { data = cb; return { dispose: () => { data = null; } }; },
       onExit: () => ({ dispose: () => undefined }),
     } as unknown as IPty,
-    feed: (chunk: string) => data?.(chunk),
+    // The bridge analyses a chunk after forwarding it (M3 A1): one turn of
+    // the (fake) event loop lets that analysis run, as it did inside the call.
+    feed: (chunk: string) => { data?.(chunk); vi.advanceTimersByTime(0); },
   };
 }
 

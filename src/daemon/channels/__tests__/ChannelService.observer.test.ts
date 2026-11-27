@@ -39,6 +39,7 @@ function makeFakeWriter() {
       lastSaved = state;
       return true;
     }),
+    loadWithStatus() { return { status: 'loaded' as const, state: this.load() }; },
     load: vi.fn((): ChannelState => (lastSaved ? clone(lastSaved) : freshState())),
   };
 }

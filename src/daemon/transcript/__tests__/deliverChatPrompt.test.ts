@@ -555,3 +555,26 @@ describe('cells the screen read could not see (the ring dropped what last wrote 
     expect(chatScreenRowsOf([{ text: `❯\u00a0${U}${U}`, undimmed: `❯\u00a0${U}` }]).undimmed?.[0]).toBe('❯\u00a0');
   });
 });
+
+describe("Claude's session survey over the composer (#3513)", () => {
+  const R = '─'.repeat(80);
+  const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine   3: Good   0: Dismiss', ''];
+  const screen = [...SURVEY, '  ✔ Update installed · /restart to apply', R, '❯ ', R, '  ⏵⏵ bypass permissions on'];
+  it('holds a chat send and a queued send as a dialog, never typing the digit-led prompt into it', async () => {
+    for (const idleOnly of [false, true]) {
+      const f = fixture(); f.show(screen);
+      const holds: string[] = [];
+      let survey = false;
+      expect(await deliverChatPrompt('conversation-1', '1 more thing', { ...f.deps, ...(idleOnly ? { idleOnly } : {}),
+        onScreenHold: (why) => holds.push(why), onSurvey: () => { survey = true; } })).toBe('blocked');
+      expect(holds).toEqual(['dialog']);
+      expect(survey).toBe(true);
+      expect(f.write).not.toHaveBeenCalled();
+    }
+  });
+  it('agrees with the delivery gate, and a survey answered far up the transcript does not hold', async () => {
+    expect(readComposer({ rows: screen, cursorRow: 5 }, 'claude', 'paste').verdict).toBe('mode');
+    const f = fixture(); f.show([...SURVEY, '⏺ ok', '', '⏺ more', '', R, '❯ ', R]);
+    expect(await deliverChatPrompt('conversation-1', 'x', { ...f.deps, idleOnly: true })).toBe('sent');
+  });
+});

@@ -190,6 +190,8 @@ describe('DaemonSessionManager', () => {
     // while it passes everywhere else.
     const osc7Path = target.startsWith('/') ? target : '/' + target.replace(/\\/g, '/');
     lastMockPty?.simulateData(`\u001b]7;file://localhost${osc7Path}\u0007`);
+    // The bridge reads output after forwarding it (M3 A1): run that now.
+    manager.getSession('osc7')?.bridge.flushPendingDetection();
 
     const meta = manager.getSession('osc7')?.meta;
     expect(meta?.cwd).toBe(target);
@@ -204,6 +206,8 @@ describe('DaemonSessionManager', () => {
     const launch = path.join(os.tmpdir(), 'launch');
     const worktree = path.join(launch, 'worktree');
     lastMockPty?.simulateData(toOsc7(launch));
+    // The bridge reads output after forwarding it (M3 A1): run that now.
+    manager.getSession('agent-cwd')?.bridge.flushPendingDetection();
 
     const moves: string[] = [];
     manager.on('session:cwd', (e: { cwd: string }) => moves.push(e.cwd));
@@ -216,6 +220,8 @@ describe('DaemonSessionManager', () => {
     // The agent exits; the shell re-reports the folder it never left. That
     // repeat of its last report must still move the cwd back.
     lastMockPty?.simulateData(toOsc7(launch));
+    // The bridge reads output after forwarding it (M3 A1): run that now.
+    manager.getSession('agent-cwd')?.bridge.flushPendingDetection();
     expect(meta?.cwd).toBe(launch);
     expect(moves).toEqual([worktree, launch]);
   });

@@ -13,7 +13,7 @@ function makeFakePty(): { pty: IPty; feed: (data: string) => void } {
       dataHandler = cb;
       return { dispose: () => { dataHandler = null; } };
     },
-    onExit: () => ({ dispose: () => {} }),
+    onExit: () => ({ dispose: () => { /* no-op */ } }),
   } as unknown as IPty;
   return { pty, feed: (data: string) => dataHandler?.(data) };
 }
@@ -30,7 +30,9 @@ describe('DaemonPTYBridge OSC 7 cwd dedup (app-weight P1-4)', () => {
   beforeEach(() => {
     bridge = new DaemonPTYBridge();
     const fake = makeFakePty();
-    feed = fake.feed;
+    // The bridge analyses a chunk after forwarding it (M3 A1); the flush runs
+    // that analysis now, as it ran inside the call.
+    feed = (data) => { fake.feed(data); bridge.flushPendingDetection(); };
     cwdEvents = [];
     bridge.on('cwd', (e) => cwdEvents.push(e));
     bridge.setupDataForwarding(fake.pty, new RingBuffer(4096), 'sess-1');
@@ -95,7 +97,9 @@ describe('DaemonPTYBridge OSC 7-sticky scrape disable', () => {
   beforeEach(() => {
     bridge = new DaemonPTYBridge();
     const fake = makeFakePty();
-    feed = fake.feed;
+    // The bridge analyses a chunk after forwarding it (M3 A1); the flush runs
+    // that analysis now, as it ran inside the call.
+    feed = (data) => { fake.feed(data); bridge.flushPendingDetection(); };
     cwdEvents = [];
     bridge.on('cwd', (e) => cwdEvents.push(e));
     bridge.setupDataForwarding(fake.pty, new RingBuffer(4096), 'sess-1');

@@ -27,13 +27,14 @@ import { CHATV2_PROVIDER_SESSION_ID } from '../shared/chatv2/ipc';
 import { permissionFlagFor, type ResumeBinding } from '../shared/agentResume';
 import { agentRow } from '../shared/agentIdentity';
 import { inResumeCwd, type ResumeShell } from './chat/v2/handoff';
+import { shellQuote } from '../shared/resumeShell';
 import { beginPaneMove, endPaneMove } from './chat/v2/paneClaims';
 import { withChosenAccountEnv } from './phone/paneAccountSpawn';
 import type { AgentStopResult } from './agentStop';
 import type { DaemonPTYBridge } from './DaemonPTYBridge';
 import { isWslOwnTranscriptPath } from './hooks/transcriptPathGuard';
 import { isLinuxCwd, validWslTarget, type WslTarget } from '../shared/wsl';
-import { parseWslAccountKeys, setWslAccountKeys, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, wslAccountLinuxHome } from '../shared/wslAccountHome';
+import { parseWslAccountKeys, setWslAccountKeys, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, wslAccountHomeKey, wslAccountLinuxHome } from '../shared/wslAccountHome';
 import type { WslAccountCopyOutcome } from './wslAccountCopy';
 
 export type ContinueOnAccountCode =
@@ -42,6 +43,8 @@ export type ContinueOnAccountCode =
   | 'unsupported'
   | 'not_claude'
   | 'unknown_session'
+  /** The pane moved to another conversation after Claude stopped: a failure, not a refusal. */
+  | 'session_changed'
   | 'invalid_account'
   | 'same_account'
   | 'turn_open'
@@ -206,9 +209,18 @@ export async function copyTranscript(source: string, target: string): Promise<'c
  * then Claude on the account's config dir, resuming exactly `sessionId` in
  * its recorded permission mode. Submitted. Null when a value cannot be typed.
  */
-export function relaunchLine(binding: ResumeBinding, configDir: string, shell: ResumeShell): string | null {
+export function relaunchLine(binding: ResumeBinding, configDir: string, shell: ResumeShell, shellEnv: Readonly<Record<string, string>> = {}): string | null {
   if (!CHATV2_PROVIDER_SESSION_ID.test(binding.sessionId) || !binding.cwd || CONTROL.test(binding.cwd)) return null;
   const agent = ['claude', '--resume', binding.sessionId, permissionFlagFor(binding.permissionMode)].filter(Boolean).join(' ');
+  if (shell === 'posix') {
+    // Exported in the shell, not prefixed to the one command: the pane is now
+    // on the account (its record says so), so a claude typed there after this
+    // one exits runs on it too, as PowerShell's $env: line does.
+    const vars = { CLAUDE_CONFIG_DIR: configDir, ...shellEnv };
+    if (Object.values(vars).some((v) => !v || CONTROL.test(v))) return null;
+    const exports = Object.entries(vars).map(([k, v]) => `${k}=${shellQuote(v)}`).join(' ');
+    return `export ${exports}; ${inResumeCwd(binding.cwd, agent, shell)}\r`;
+  }
   let pinned: string;
   try {
     pinned = withChosenAccountEnv(agent, { env: { CLAUDE_CONFIG_DIR: configDir }, paneAccount: { vendor: 'claude' } }, 'claude', shell);
@@ -421,7 +433,9 @@ async function runWsl(
   if (!planned.ok || !binding) return { ok: false, code: planned.ok ? 'unknown_session' : planned.code };
   const { plan } = planned;
   if (!isLinuxCwd(binding.cwd) || !binding.cwd.startsWith('/')) return { ok: false, code: 'unknown_session' };
-  const line = relaunchLine(binding, plan.home, 'posix');
+  // The pane's shell re-derives its home from this key (WSL_ACCOUNT_SH), so a
+  // nested shell there lands on the account's home too.
+  const line = relaunchLine(binding, plan.home, 'posix', { WMUX_WSL_ACCOUNT_CLAUDE: wslAccountHomeKey(configDir) });
   if (!line) return { ok: false, code: 'invalid_account' };
   if (!(await wsl.sourceReady(id, binding))) return { ok: false, code: 'unknown_session' };
   if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
@@ -494,7 +508,8 @@ async function stopCopyRelaunch(
   if (stop.stopped) keys?.rebase();
   // Still the same conversation: a hook may have rebound the pane meanwhile.
   const stillOwn = () => deps.pane(id)?.resumeBinding?.sessionId === binding.sessionId;
-  if (!stillOwn()) return { ok: false, code: 'unknown_session' };
+  // Claude is stopped by now: not the refusal 'unknown_session' is (nothing stopped).
+  if (!stillOwn()) return { ok: false, code: 'session_changed' };
 
   try {
     const copied = await step.copy();

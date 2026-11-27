@@ -4,7 +4,8 @@
 // loads hooks from, which events to register and in which command form. Only
 // the `owned-file` strategy is wired (GitHub Copilot CLI): wmux writes a file of
 // its own into a directory the CLI scans, so no user settings file is ever
-// parsed or rewritten, and uninstall is deleting that file.
+// parsed or rewritten, and uninstall is deleting that file. The `owned-module`
+// strategy (Oh My Pi) is the same, with a shipped extension module as the file.
 //
 // Idempotent by construction: install refreshes only a file whose every entry
 // runs the shared bridge for this flavour (the ownership proof), reports
@@ -22,7 +23,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { writeJsonAtomic } from '../settingsFile';
+import { writeJsonAtomic, writeTextAtomic } from '../settingsFile';
+import { inspectTomlHooks, planTomlHooksInstall, planTomlHooksRemove, type TomlHookPlan } from './tomlHookEntries';
 import {
   expectationKey,
   prepareProbedNative,
@@ -90,6 +92,12 @@ export interface CompatHookPaths {
    * on the directory the CLI itself reads.
    */
   configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>>;
+  /** Each owned-module flavour's shipped module, or null when this build has
+   *  none to copy. */
+  moduleSources?: Partial<Record<CompatHookFlavourId, string | null>>;
+  /** Each toml-hooks flavour's shipped entry point, or null when this build
+   *  has none to copy. */
+  entrySources?: Partial<Record<CompatHookFlavourId, string | null>>;
 }
 
 /**
@@ -104,7 +112,7 @@ export function resolveCompatHookConfigDir(
   env: Readonly<Record<string, string | undefined>>,
 ): CompatHookConfigDir | null {
   const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
-  if (!install || install.strategy !== 'owned-file') return null;
+  if (!install || install.strategy === 'settings-hooks-key') return null;
   const override = install.configDirEnv ? env[install.configDirEnv]?.trim() : undefined;
   if (override) return { dir: path.resolve(override), source: 'env' };
   return { dir: path.join(home, ...install.configDir), source: 'home' };
@@ -151,14 +159,25 @@ export function resolveCompatHookPaths(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): CompatHookPaths {
   const configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>> = {};
+  const moduleSources: Partial<Record<CompatHookFlavourId, string | null>> = {};
+  const entrySources: Partial<Record<CompatHookFlavourId, string | null>> = {};
   for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
     const resolved = resolveCompatHookConfigDir(id, home, env);
     if (resolved) configDirs[id] = resolved;
+    const install = COMPAT_HOOK_FLAVOURS[id].install;
+    if (install?.strategy === 'owned-module') {
+      moduleSources[id] = findLifecycleAssetSourceFrom(startDir, install.moduleBasename, install.moduleSource);
+    }
+    if (install?.strategy === 'toml-hooks') {
+      entrySources[id] = findLifecycleAssetSourceFrom(startDir, install.entryBasename, install.entrySource);
+    }
   }
   const nativeSource = findNativeHooksSource(startDir);
   return {
     home,
     configDirs,
+    moduleSources,
+    entrySources,
     nativeHooks: nativeSource
       ? {
         sourcePath: nativeSource,
@@ -187,8 +206,114 @@ export function compatHookConfigPath(
 ): string | null {
   const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
   const configDir = paths.configDirs[flavourId];
-  if (!install || install.strategy !== 'owned-file' || !configDir) return null;
+  if (!install || install.strategy === 'settings-hooks-key' || !configDir) return null;
   return path.join(configDir.dir, ...install.file);
+}
+
+/** The module copy of an owned-module flavour, as a lifecycle asset, or null. */
+function compatHookModuleSpec(
+  flavourId: CompatHookFlavourId,
+  paths: Pick<CompatHookPaths, 'configDirs' | 'moduleSources'>,
+): LifecycleAssetSpec | null {
+  const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
+  const destinationPath = compatHookConfigPath(flavourId, paths);
+  if (install?.strategy !== 'owned-module' || !destinationPath) return null;
+  return { sourcePath: paths.moduleSources?.[flavourId] ?? null, destinationPath, ownershipMarkers: [install.marker] };
+}
+
+// ----- toml-hooks (jcode) ---------------------------------------------------
+
+type TomlHooksInstall = Extract<NonNullable<(typeof COMPAT_HOOK_FLAVOURS)[CompatHookFlavourId]['install']>, { strategy: 'toml-hooks' }>;
+
+function tomlHooksInstall(flavourId: CompatHookFlavourId): TomlHooksInstall | null {
+  const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
+  return install?.strategy === 'toml-hooks' ? install : null;
+}
+
+/** The entry point's copy beside the shared bridge in ~/.wmux/hooks/. */
+function tomlEntrySpec(flavourId: CompatHookFlavourId, paths: Pick<CompatHookPaths, 'bridge' | 'entrySources'>): LifecycleAssetSpec | null {
+  const install = tomlHooksInstall(flavourId);
+  if (!install) return null;
+  return {
+    sourcePath: paths.entrySources?.[flavourId] ?? null,
+    destinationPath: path.join(path.dirname(paths.bridge.destinationPath), install.entryBasename),
+    ownershipMarkers: [install.marker],
+  };
+}
+
+/**
+ * The command wmux registers: `node "<entry>"`. jcode splits the line
+ * shell-style (quotes, backslash escapes) and runs it without a shell, so the
+ * path is quoted for spaces and written with forward slashes (a Windows
+ * backslash would be read as an escape). Null for a path with a quote in it.
+ */
+export function tomlHookCommand(entryPath: string): string | null {
+  const forward = entryPath.replace(/\\/g, '/');
+  if (/["\r\n]/.test(forward)) return null;
+  return `node "${forward}"`;
+}
+
+/** wmux's command is exactly the form tomlHookCommand writes, for an entry
+ *  point of this basename at any path (an older home moves it). A user's own
+ *  command that merely names the file (`logger wmux-jcode-bridge.mjs`) is not. */
+function tomlOwned(flavourId: CompatHookFlavourId): (command: string) => boolean {
+  const basename = tomlHooksInstall(flavourId)?.entryBasename;
+  if (!basename) return () => false;
+  const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^node "[^"\\r\\n]*/${escaped}"$`);
+  return (command) => re.test(command);
+}
+
+function readOptionalText(file: string): { text: string | null } | { error: string } {
+  try {
+    // A BOM is not TOML; the write puts it back (keepBom).
+    return { text: fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '') };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { text: null };
+    return { error: String(error) };
+  }
+}
+
+function inspectTomlHooksConfig(
+  flavourId: CompatHookFlavourId,
+  configPath: string,
+  entryPath: string,
+): CompatHookConfigState {
+  const install = tomlHooksInstall(flavourId) as TomlHooksInstall;
+  const read = readOptionalText(configPath);
+  if ('error' in read) return 'malformed';
+  const wanted = tomlHookCommand(entryPath);
+  const states = inspectTomlHooks(read.text, install.register, wanted ?? '', tomlOwned(flavourId));
+  if (!states) return 'malformed';
+  const values = Object.values(states);
+  if (values.every((v) => v === 'current')) return 'current';
+  if (values.every((v) => v === 'absent')) return 'absent';
+  return 'stale';
+}
+
+/** Apply a plan: write the edit, or report the lines to add by hand. */
+function applyTomlPlan(configPath: string, plan: TomlHookPlan): { written: boolean; manualLines: readonly string[] | null; error: string | null } {
+  if (plan.kind === 'manual') return { written: false, manualLines: plan.lines, error: null };
+  if (plan.kind === 'malformed') return { written: false, manualLines: null, error: null };
+  if (plan.text === null) return { written: false, manualLines: null, error: null };
+  try {
+    writeTextAtomic(configPath, plan.text, { keepBom: true });
+  } catch (error) {
+    return { written: false, manualLines: null, error: String(error) };
+  }
+  return { written: true, manualLines: null, error: null };
+}
+
+/** A module copy's asset state, in the config states the other strategy reports. */
+function moduleConfigState(state: LifecycleAssetStatus['state']): CompatHookConfigState {
+  switch (state) {
+    case 'current': return 'current';
+    case 'stale': return 'stale';
+    case 'missing': return 'absent';
+    case 'foreign': return 'foreign';
+    // An unreadable copy, or no shipped module to compare it with.
+    default: return 'malformed';
+  }
 }
 
 interface ExecLeaf {
@@ -326,12 +451,27 @@ function describeNativeHooks(
 
 export function inspectCompatHookConfig(
   flavourId: CompatHookFlavourId,
-  paths: Pick<CompatHookPaths, 'configDirs'>,
+  paths: Pick<CompatHookPaths, 'configDirs' | 'moduleSources'>,
   bridgePath: string,
   nativePath: string | null = null,
 ): { state: CompatHookConfigState; configPath: string | null } {
   const configPath = compatHookConfigPath(flavourId, paths);
   if (!configPath) return { state: 'unsupported', configPath: null };
+  const toml = tomlHooksInstall(flavourId);
+  if (toml) {
+    const entry = path.join(path.dirname(bridgePath), toml.entryBasename);
+    return { state: inspectTomlHooksConfig(flavourId, configPath, entry), configPath };
+  }
+  const moduleSpec = compatHookModuleSpec(flavourId, paths);
+  if (moduleSpec) {
+    const asset = inspectLifecycleAsset(moduleSpec);
+    // With no shipped module to compare against, a wmux copy is still wmux's;
+    // and a copy that differs is wmux's only by its first line.
+    if (asset.state === 'source-missing' || asset.state === 'stale') {
+      return { state: inspectOwnedModuleWithoutSource(moduleSpec), configPath };
+    }
+    return { state: moduleConfigState(asset.state), configPath };
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf8');
@@ -350,6 +490,30 @@ export function inspectCompatHookConfig(
   return { state: JSON.stringify(parsed) === wanted ? 'current' : 'stale', configPath };
 }
 
+/** A module is wmux's when its first line is a wmux marker comment; a
+ *  user's own module that merely mentions the marker elsewhere is not. */
+function ownsByFirstLine(text: string, markers: readonly string[]): boolean {
+  const first = text.replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0].trim();
+  return markers.some((marker) => first === `// ${marker}`);
+}
+
+/** A module copy judged by its marker alone (no shipped source to compare). */
+function inspectOwnedModuleWithoutSource(spec: LifecycleAssetSpec): CompatHookConfigState {
+  let text: string;
+  try {
+    text = fs.readFileSync(spec.destinationPath, 'utf8');
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'malformed';
+  }
+  return ownsByFirstLine(text, spec.ownershipMarkers) ? 'stale' : 'foreign';
+}
+
+/** `node <bridge>` is the only form an omp-style module runs. */
+const MODULE_RUNS_NODE = 'the extension runs `node <bridge>`';
+
+/** A toml-hooks entry runs `node` on its entry point, which loads the bridge. */
+const TOML_RUNS_NODE = 'hooks run `node <entry point>`, which loads the shared bridge';
+
 export interface CompatHookInstallOutcome {
   ok: boolean;
   flavour: CompatHookFlavourId;
@@ -364,6 +528,9 @@ export interface CompatHookInstallOutcome {
   before: CompatHookConfigState;
   action: 'none' | 'installed' | 'refreshed';
   error: string | null;
+  /** toml-hooks: the file could not be edited safely, so nothing was written;
+   *  these lines belong under its `[hooks]` table. */
+  manualLines?: readonly string[];
 }
 
 export interface CompatHookInstallOptions {
@@ -470,6 +637,28 @@ export async function installCompatHooks(
     // missing file for every event. Write nothing.
     return { ...stopped, ok: false, bridge, before: owned, error: bridge.error };
   }
+  const entrySpec = tomlEntrySpec(flavourId, paths);
+  if (entrySpec) {
+    const base = { flavour: flavourId, configPath, native: null, nativeSummary: TOML_RUNS_NODE, bridge, before: owned };
+    const command = tomlHookCommand(entrySpec.destinationPath);
+    if (!command) return { ...base, ok: false, action: 'none', error: `no safe command line for ${entrySpec.destinationPath}` };
+    const copied = installLifecycleAsset(entrySpec);
+    if (copied.state !== 'current') return { ...base, ok: false, action: 'none', error: copied.error ?? `entry point ${copied.state}` };
+    const read = readOptionalText(configPath);
+    if ('error' in read) return { ...base, ok: false, action: 'none', error: read.error };
+    const install = tomlHooksInstall(flavourId) as TomlHooksInstall;
+    const applied = applyTomlPlan(configPath, planTomlHooksInstall(read.text, install.register, command, tomlOwned(flavourId)));
+    if (applied.manualLines) return { ...base, ok: false, action: 'none', error: null, manualLines: applied.manualLines };
+    if (applied.error) return { ...base, ok: false, action: 'none', error: applied.error };
+    return { ...base, ok: true, action: applied.written ? (owned === 'absent' ? 'installed' : 'refreshed') : 'none', error: null };
+  }
+  const moduleSpec = compatHookModuleSpec(flavourId, paths);
+  if (moduleSpec) {
+    const copied = installLifecycleAsset(moduleSpec);
+    const base = { flavour: flavourId, configPath, native: null, nativeSummary: MODULE_RUNS_NODE, bridge, before: owned };
+    if (copied.state !== 'current') return { ...base, ok: false, action: 'none', error: copied.error ?? `extension module ${copied.state}` };
+    return { ...base, ok: true, action: copied.action, error: null };
+  }
   const installed = await installNativeHooks(paths.nativeHooks, opts);
   const native = installed?.outcome ?? null;
   const nativePath = installed?.active ?? null;
@@ -492,6 +681,9 @@ export interface CompatHookRemoveOutcome {
   before: CompatHookConfigState;
   removed: boolean;
   error: string | null;
+  /** toml-hooks: the lines to take out by hand, when the file could not be
+   *  edited safely (nothing was written). */
+  manualLines?: readonly string[];
 }
 
 /**
@@ -506,6 +698,21 @@ export function removeCompatHooks(flavourId: CompatHookFlavourId, paths: CompatH
   const base = { flavour: flavourId, configPath, before };
   if (before !== 'current' && before !== 'stale') {
     return { ...base, ok: before !== 'unsupported', removed: false, error: null };
+  }
+  const install = tomlHooksInstall(flavourId);
+  if (install) {
+    // Only wmux's commands leave the file; the entry point copy stays, like
+    // the shared bridge (a jcode started before the edit may still run it).
+    const read = readOptionalText(configPath as string);
+    if ('error' in read) return { ...base, ok: false, removed: false, error: read.error };
+    const owned = tomlOwned(flavourId);
+    const plan = planTomlHooksRemove(read.text, install.register, owned);
+    const applied = applyTomlPlan(configPath as string, plan);
+    if (applied.manualLines) {
+      const lines = install.register.map((k) => `${k}: remove the command running ${install.entryBasename}`);
+      return { ...base, ok: false, removed: false, error: null, manualLines: lines };
+    }
+    return { ...base, ok: !applied.error, removed: applied.written, error: applied.error };
   }
   try {
     fs.unlinkSync(configPath as string);
@@ -528,19 +735,34 @@ export interface CompatHookStatus {
    *  default under the home directory. Null when the flavour has no installer. */
   configDirSource: CompatHookConfigDirSource | null;
   config: CompatHookConfigState;
+  /** toml-hooks: the entry point copy beside the bridge. */
+  entry?: LifecycleAssetStatus;
 }
 
 export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookStatus {
   // Read once, never run: status must not spawn the binary.
   const native = paths.nativeHooks ? inspectLifecycleAsset(paths.nativeHooks) : null;
   const active = activeNativeHooksPath(paths.nativeHooks, native);
-  const { state, configPath } = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath, active);
+  const inspected = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath, active);
+  const { configPath } = inspected;
+  // The config's commands run the entry point copy: a missing or stale copy
+  // makes a written config stale too.
+  const entrySpec = tomlEntrySpec(flavourId, paths);
+  const entry = entrySpec ? inspectLifecycleAsset(entrySpec) : undefined;
+  const state = entry && entry.state !== 'current' && (inspected.state === 'current' || inspected.state === 'stale')
+    ? 'stale'
+    : inspected.state;
   return {
     flavour: flavourId,
+    ...(entry ? { entry } : {}),
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,
-    nativeSummary: describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
+    nativeSummary: tomlHooksInstall(flavourId)
+      ? TOML_RUNS_NODE
+      : compatHookModuleSpec(flavourId, paths)
+      ? MODULE_RUNS_NODE
+      : describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
     configPath,
     configDirSource: paths.configDirs[flavourId]?.source ?? null,
     config: state,
