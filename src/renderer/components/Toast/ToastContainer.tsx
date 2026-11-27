@@ -118,7 +118,7 @@ function ToastItem({
           {message}
         </button>
       ) : (
-        <span className="flex-1 leading-snug">
+        <span className="flex-1 min-w-0 leading-snug" style={{ overflowWrap: 'anywhere' }}>
           {message}
           {code && (
             <code data-toast-code className="ui-code block mt-1" style={{ overflowWrap: 'anywhere' }}>{code}</code>

@@ -35,6 +35,7 @@ import type { Pane, PaneLeaf } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { isLeafReserved, useReservedLeavesVersion } from '../../utils/reservedLeaves';
 import { ptyLifecycle, useReleaseOrphanedRefusals } from '../../hooks/ptyLifecycle';
+import { noticeMissingCwd } from '../../hooks/missingCwdNotice';
 
 type LeafPane = PaneLeaf;
 
@@ -201,8 +202,8 @@ export function EmptyLeafFunnel() {
           .then((res) => { if (res && res.ok === false) refused(); }, refused);
       }
       // A refused create (toast surfaced by useIpc) leaves the leaf refused.
-      void ptyLifecycle.ensure<{ id: string; shell?: string; cwd?: string }>(paneId, {
-        create: () => ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
+      void ptyLifecycle.ensure<{ id: string; shell?: string; cwd?: string; missingCwd?: string }>(paneId, {
+        create: () => ipcInvoke<{ id: string; shell?: string; cwd?: string; missingCwd?: string }>(() =>
           window.electronAPI.pty.create(
             withRoleBinding(
               withWorkspaceProfile(
@@ -254,6 +255,8 @@ export function EmptyLeafFunnel() {
           // v2 RCA fix (axis A): the immediate persist now lives INSIDE addSurface
           // (surfaceSlice centralization) so every binding call site gets it.
           addSurface(paneId, created.id, shellName, created.cwd || '', wsId);
+          // #3443 — the folder the split asked for is gone: it opened in home.
+          noticeMissingCwd(created.id, created.missingCwd);
           // Set initial CWD in workspace metadata from first pane
           if (created.cwd) {
             const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;
