@@ -73,7 +73,8 @@ export async function deliverChatPrompt(
   // Claude's session survey sits over an empty composer and takes a digit
   // typed there: a prompt starting with one would answer it. It is a dialog
   // to wait out, the same way the delivery gate (readClaude) waits it out.
-  if (initial.slug === 'claude' && rows && claudeSurveyOver(rows, claudePromptRow(rows))) {
+  // (Only Claude draws it, over its own `❯` prompt row: the layout names the agent.)
+  if (rows && claudeSurveyOver(rows, claudePromptRow(rows))) {
     deps.onSurvey?.();
     deps.onScreenHold?.('dialog');
     return 'blocked';
