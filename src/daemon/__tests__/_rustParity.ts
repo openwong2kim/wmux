@@ -11,6 +11,16 @@
  * inside a soft-wrapped paragraph, where copy and reflow ignore the edge, and
  * left of the cursor, where blanks replay as printed (a shell prompt's space).
  *
+ * Accepted deviation: no payload can begin with a continuation row. Once the
+ * history cap cuts a soft-wrapped paragraph, the oldest history row continues
+ * a trimmed one on the live terminal, but a replay only marks a row wrapped
+ * when the row above wraps into it, and xterm's serializer has the same
+ * limit. A filler row above it would be trimmed only by a client whose cap
+ * equals the history, while a request's history is capped to the native grid
+ * and the renderer keeps its own, usually larger, cap: the filler would stay
+ * as a blank row. Only that row's wrap flag differs (copy and reflow treat it
+ * as a line start); its text and the cursor replay as they were (#3519).
+ *
  * The checks stub WMUX_RUST_SNAPSHOT; a suite stubs WMUX_RUST_SNAPSHOT_MODULE
  * to `modulePath` and skips unless `available`.
  */
