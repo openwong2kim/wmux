@@ -3,7 +3,7 @@
 use crate::fallible::{self, AllocFailed};
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid, Row};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CharsetIndex, Color, NamedColor, StandardCharset};
@@ -213,7 +213,22 @@ impl Pen {
     }
 }
 
-fn cursor(out: &mut Out, pen: &mut Pen, grid: &Grid<Cell>) {
+/// `saved`: a default cursor save to carry (`serialize`), placed before the
+/// cursor itself.
+fn cursor(out: &mut Out, pen: &mut Pen, grid: &Grid<Cell>, saved: Option<Point>) {
+    if let Some(saved) = saved {
+        // DECSC with no rendition, link or charset, as a default save holds.
+        pen.set_link(out, None);
+        out.push_str(RESET);
+        pen.style = RESET.to_owned();
+        pen.colored = false;
+        let _ = write!(
+            out,
+            "\x1b[{};{}H\x1b7",
+            saved.line.0 + 1,
+            saved.column.0 + 1
+        );
+    }
     let point = grid.cursor.point;
     let mut col = point.column.0;
     if grid.cursor.input_needs_wrap
@@ -299,7 +314,12 @@ fn whole_glyphs(
 }
 
 /// Returns whether the replay leaves a hyperlink open.
-fn screen(out: &mut Out, grid: &Grid<Cell>, repair: bool) -> Result<bool, SerializeError> {
+fn screen(
+    out: &mut Out,
+    grid: &Grid<Cell>,
+    repair: bool,
+    saved: Option<Point>,
+) -> Result<bool, SerializeError> {
     let mut pen = Pen::default();
     let columns = grid.columns();
     for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
@@ -407,7 +427,7 @@ fn screen(out: &mut Out, grid: &Grid<Cell>, repair: bool) -> Result<bool, Serial
         }
         out.check()?;
     }
-    cursor(out, &mut pen, grid);
+    cursor(out, &mut pen, grid, saved);
     out.check()?;
     Ok(pen.link.is_some())
 }
@@ -678,9 +698,16 @@ fn csi_divergent(rest: &[u8]) -> bool {
 
 /// `repair_wide`: whether a half-erased fullwidth glyph may be replayed as
 /// the blank its erased partner holds (the stream shifted no cells).
+///
+/// `saved_main`: xterm's saved cursor on the shown main screen, as a screen
+/// point, when it holds no more than a default save (no rendition, charset or
+/// mode) and sits away from the top-left cell: xterm moves even a cursor never
+/// saved with a narrowing, and a replay without a DECSC restores the top-left
+/// cell instead (#3518). It is saved before the cursor is placed.
 pub(crate) fn serialize(
     term: &Term<VoidListener>,
     repair_wide: bool,
+    saved_main: Option<Point>,
 ) -> Result<String, SerializeError> {
     // A fullwidth glyph in the last column cannot be printed there: it would
     // wrap instead. The cursor paragraph's narrowing resets it as xterm's trim
@@ -720,13 +747,14 @@ pub(crate) fn serialize(
     if modes.contains(TermMode::ALT_SCREEN) {
         // DECSC on entry saves the primary template, open hyperlink included,
         // as it did live; the alternate grid then starts without one.
-        let linked = screen(&mut out, term.inactive_grid(), repair_wide)?;
+        let linked = screen(&mut out, term.inactive_grid(), repair_wide, None)?;
         out.push_str("\x1b[?1049h\x1b[0m\x1b[H");
         if linked {
             out.push_str("\x1b]8;;\x1b\\");
         }
     }
-    screen(&mut out, term.grid(), repair_wide)?;
+    let saved_main = saved_main.filter(|_| !modes.contains(TermMode::ALT_SCREEN));
+    screen(&mut out, term.grid(), repair_wide, saved_main)?;
     for (mode, code) in [
         (TermMode::APP_CURSOR, 1),
         (TermMode::ORIGIN, 6),
@@ -782,7 +810,7 @@ mod tests {
         let mut term = Term::new(Config::default(), &Size(cols, 3), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes.as_bytes());
-        serialize(&term, true).map_err(|error| match error {
+        serialize(&term, true, None).map_err(|error| match error {
             SerializeError::Refused(reason) => reason,
             SerializeError::Alloc(failed) => panic!("{failed}"),
         })
@@ -1105,7 +1133,7 @@ mod tests {
             assert!(term.grid()[Line(0)][Column(9)]
                 .flags
                 .contains(Flags::WRAPLINE));
-            serialize(&term, true).unwrap()
+            serialize(&term, true, None).unwrap()
         };
         // Filler through the edge (4 = 3 cells + the next row's head), its
         // head erased, then back up to column 7; the red pen closed first.
