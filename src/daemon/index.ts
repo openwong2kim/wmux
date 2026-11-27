@@ -2207,7 +2207,7 @@ async function recoverSessions(
   processMonitor: ProcessMonitor,
   maxRecover: number,
 ): Promise<void> {
-  const state = stateWriter.load();
+  const { status: stateLoadStatus, state } = stateWriter.loadWithStatus();
   let changed = false;
   const recoveredIds = new Set<string>();
   // No Rust terminal module: nothing can start on this boot (there is no other
@@ -2713,7 +2713,13 @@ async function recoverSessions(
       preservedBufferIds.add(session.id);
     }
   }
-  stateWriter.cleanOrphanedBuffers(preservedBufferIds);
+  // #3247: an unreadable sessions.json reads as zero sessions, which would make
+  // every .buf an orphan. Keep them until a boot that can read the file.
+  if (stateLoadStatus === 'unreadable') {
+    log('warn', `[recovery] ${stateWriter.getFilePath()} and its backups could not be read — keeping every scrollback buffer, skipping the orphan cleanup`);
+  } else {
+    stateWriter.cleanOrphanedBuffers(preservedBufferIds);
+  }
 
   if (heldCount > 0) {
     log('info', `[recovery] holding ${heldCount} restored user shell(s) for the app to start with their credentials`);
@@ -3288,7 +3294,14 @@ function registerRpcHandlers(
     // remainder alongside it or this write erases those panes — the same merge
     // the reboot-survival save in recoverSessions does.
     const liveIds = new Set(next.sessions.map((s) => s.id));
-    next.sessions.push(...stateWriter.load().sessions.filter((s) => !liveIds.has(s.id)));
+    const onDisk = stateWriter.loadWithStatus();
+    // #3247: unreadable reads as zero sessions; saving the merge would replace
+    // the file with the live panes only.
+    if (onDisk.status === 'unreadable') {
+      log('warn', `[recovery] ${stateWriter.getFilePath()} could not be read — not saving the retention restamp for ${id}`);
+      return;
+    }
+    next.sessions.push(...onDisk.state.sessions.filter((s) => !liveIds.has(s.id)));
     stateWriter.saveImmediate(next);
   };
 
@@ -10269,8 +10282,17 @@ async function main(): Promise<void> {
       eventsDir,
       // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입
       // 가드 포함)로 READ만 한다 — 변환은 레거시를 절대 쓰지 않는다(§6.1-2).
-      readLegacyState: () =>
-        fs.existsSync(channelsJsonPath) ? channelStateWriter.load() : null,
+      readLegacyState: () => {
+        if (!fs.existsSync(channelsJsonPath)) return null;
+        const loaded = channelStateWriter.loadWithStatus();
+        // #3247: an unreadable channels.json must not become an empty genesis.
+        // Throwing aborts the migration with the legacy file untouched; the
+        // next boot retries.
+        if (loaded.status === 'unreadable') {
+          throw new Error(`${channelsJsonPath} and its backups could not be read`);
+        }
+        return loaded.state;
+      },
       validateProjection: (d) => ChannelStateWriter.isChannelState(d),
       // 완결 직후 워터마크 스탬프 되쓰기(§6.4c pristine 창 봉합) — durable(§2.3).
       writeLegacyStamped: (stamped) => {
@@ -10293,9 +10315,15 @@ async function main(): Promise<void> {
     // 워터마크 부트 판정(§6.4c) — 기존 로그-활성 부트에서만. 신규 마이그레이션은
     // 방금 genesis를 떴으므로 다운그레이드 창이 없고, 파일 부재는 reseed 대상이 아니다.
     if (migration.detection === 'active' && fs.existsSync(channelsJsonPath)) {
-      const raw = channelStateWriter.load();
-      const verdict = evaluateWatermark(raw);
-      if (verdict.kind === 'downgrade-write') {
+      const loaded = channelStateWriter.loadWithStatus();
+      const raw = loaded.state;
+      // #3247: unreadable reads as empty with no watermark, which evaluates as a
+      // downgrade and would reseed the active snapshot with nothing. The log is
+      // canonical, so skip the reseed and leave channels.json as it is.
+      const verdict = loaded.status === 'unreadable' ? null : evaluateWatermark(raw);
+      if (verdict === null) {
+        log('warn', `${channelsJsonPath} and its backups could not be read — skipping the legacy-reseed check, file left as it is`);
+      } else if (verdict.kind === 'downgrade-write') {
         log('warn', `channels.json 구-데몬 쓰기 감지(${verdict.reason}) — legacy-reseed 수행(§6.4c)`);
         const reseed = await performReseed({
           eventsDir,

@@ -25,7 +25,9 @@ import {
   atomicWriteJSONSync,
   createMigrator,
   CHANNEL_STATE_REGISTRY,
+  stateSlotsOnDisk,
 } from '../util/atomicWrite';
+import type { StateLoadStatus } from '../StateWriter';
 import { AsyncQueue } from '../util/AsyncQueue';
 import {
   CHANNEL_EMPTY_TTL_HOURS_DEFAULT,
@@ -246,6 +248,18 @@ export class ChannelStateWriter {
    * @returns The loaded state, possibly empty.
    */
   load(): ChannelState {
+    return this.loadWithStatus().state;
+  }
+
+  /**
+   * load(), plus whether the file was read. `unreadable` means channels.json or
+   * a backup was on disk but none could be read or validated: the empty state
+   * returned then is not the user's state and must not be reseeded or migrated
+   * (#3247). `missing` is a genuine first boot.
+   */
+  loadWithStatus(): { status: StateLoadStatus; state: ChannelState } {
+    // Before the read: a validator rejection quarantines (moves) the file.
+    const onDisk = stateSlotsOnDisk(this.filePath);
     const migrator = createMigrator<ChannelState>(
       CHANNEL_STATE_REGISTRY,
       this.filePath,
@@ -262,12 +276,15 @@ export class ChannelStateWriter {
     }
 
     if (!state) {
-      return { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} };
+      return {
+        status: onDisk ? 'unreadable' : 'missing',
+        state: { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} },
+      };
     }
 
     reapEmptyChannels(state, this.emptyChannelTtlHours);
 
-    return state;
+    return { status: 'loaded', state };
   }
 
   /** Flush pending debounce — if there is pending state, write it immediately. */

@@ -586,6 +586,8 @@ interface IdempotencyEntry {
 
 export class ChannelService {
   private readonly writer: ChannelStateWriter;
+  /** Set when the legacy seed could not read channels.json (#3247). */
+  private writesRefused = false;
   private readonly eventLog?: ChannelServiceEventLog;
   private state: ChannelState;
   private readonly mutexes = new Map<string, Promise<void>>();
@@ -661,7 +663,14 @@ export class ChannelService {
       // Seed from the writer. The writer's `load()` runs the empty-channel
       // reaper and prototype-pollution guards before we get the data, so
       // the service can trust the shape.
-      this.state = this.writer.load();
+      const loaded = this.writer.loadWithStatus();
+      this.state = loaded.state;
+      // #3247: an unreadable channels.json seeds empty; saving that would
+      // replace the user's channels. Refuse writes for this run instead.
+      if (loaded.status === 'unreadable') {
+        this.writesRefused = true;
+        console.warn('[ChannelService] channels.json and its backups could not be read — channel changes will not be saved this run');
+      }
     }
     this.companyId = deps.companyId;
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
@@ -3930,6 +3939,7 @@ export class ChannelService {
 
   /** Save the current state via the writer. Returns true on success. */
   private saveOrFail(): boolean {
+    if (this.writesRefused) return false;
     return this.writer.saveImmediate(this.state);
   }
 

@@ -19,6 +19,7 @@ function makeService(isMissionTaskSeat?: (channelId: string, workspaceId: string
       saved = state;
       return true;
     }),
+    loadWithStatus() { return { status: 'loaded' as const, state: this.load() }; },
     load: vi.fn((): ChannelState => JSON.parse(JSON.stringify(saved))),
   };
   return new ChannelService({
