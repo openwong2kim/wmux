@@ -174,12 +174,14 @@ interface ParkedPaneRead { rows: DaemonTextRow[]; bufferType?: 'normal' | 'alter
 
 /** Fetch a parked pane's grid from the daemon as plain-text rows, or null.
  *  `truncated` is true when the daemon dropped oldest rows to fit the RPC frame
- *  budget — the caller propagates it so coverage is reported as incomplete. */
-async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<ParkedPaneRead | null> {
+ *  budget — the caller propagates it so coverage is reported as incomplete.
+ *  `wholeRing`: parse the whole ring, never a tail (a safety gate's read). */
+async function fetchParkedPaneRows(ptyId: string, scrollback?: number, opts: { wholeRing?: boolean } = {}): Promise<ParkedPaneRead | null> {
   const api = window.electronAPI?.pty;
   if (!api || typeof api.readText !== 'function') return null; // stale preload
   try {
-    const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
+    const request = { ...(scrollback !== undefined ? { scrollback } : {}), ...(opts.wholeRing ? { tail: false } : {}) };
+    const res = await api.readText(ptyId, Object.keys(request).length ? request : undefined);
     return res?.success ? { rows: res.rows, bufferType: res.bufferType, rowsBelowCursor: res.rowsBelowCursor, truncated: res.truncated === true } : null;
   } catch {
     return null;
@@ -3214,7 +3216,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // Internal: main's folder-trust check asks which reads came from the
       // daemon ring rather than a live terminal (not an MCP parameter).
       const parkedTag = raw.markParked === true ? { parked: true } : {};
-      const read = await fetchParkedPaneRows(ptyId, depth);
+      // Main's approval gate decides from this read whether to type into the
+      // pane, so its read parses the whole ring, never the daemon's tail.
+      const read = await fetchParkedPaneRows(ptyId, depth, { wholeRing: raw.markParked === true });
       if (!read) return { ptyId, text: '', ...parkedTag }; // legacy daemon / local / gone
       let texts = read.rows.map((r) => r.text);
       // A legacy daemon sends no count; then nothing is dropped or reported.

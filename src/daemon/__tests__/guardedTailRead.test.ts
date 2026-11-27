@@ -402,3 +402,110 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
     expect((await read(s)).via).toBe('tail');
   });
 });
+
+describe('guarded tail: a read that keeps deep history (#3510)', () => {
+  const DEPTH = 5000;
+  /** Coloured shell lines, `bytes` of them in all, in chunks the mode tracker reads at once. */
+  const lines = (bytes: number, from = 0, body = 'x'.repeat(50)): string[] => {
+    const chunks: string[] = [];
+    let chunk = '';
+    for (let i = from, total = 0; total < bytes; i++) {
+      const line = `\x1b[32mrow ${i}\x1b[0m ${body}\r\n`;
+      chunk += line;
+      total += line.length;
+      if (chunk.length > 64 * 1024) { chunks.push(chunk); chunk = ''; }
+    }
+    return chunk ? [...chunks, chunk] : chunks;
+  };
+  const deepCounting = () => {
+    const calls: number[] = [];
+    return {
+      calls,
+      parse: (initial: Buffer) => { calls.push(initial.length); return generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: DEPTH, initial }); },
+    };
+  };
+
+  it('serves a flood pane from a tail that holds the history, equal to the whole ring; the 256 KiB tail missed', async () => {
+    const s = session(lines(3 * 1024 * 1024)); // past the 2 MiB ring: it has wrapped
+    const full = texts(await queuedTextSnapshot(table(s), 'pane', DEPTH));
+    expect(full.length).toBeGreaterThan(DEPTH);
+
+    const read = await queuedTextTail(table(s), 'pane', DEPTH, 'read');
+    expect(read?.via).toBe('tail');
+    expect(texts(read)).toEqual(full);
+    expect(tailReadCounters().read).toMatchObject({ served: 1, fallbacks: {} });
+
+    // Without the history depth the tail is the newest 256 KiB, whose first rows are still among the 5000 kept.
+    const byBytes = deepCounting();
+    const shallow = await guardedTailRead(s, { site: 'fleet', variant: `scrollback:${DEPTH}`, parse: byBytes.parse });
+    expect(shallow.via).toBe('full');
+    expect(tailReadCounters().fleet.fallbacks).toEqual({ 'unknown-visible': 1 });
+  });
+
+  it("leaves Fleet's tail as it was: a preview's history fits in the newest 256 KiB", async () => {
+    const s = session(lines(3 * 1024 * 1024));
+    const preview = 160;
+    const parse = (calls: number[]) => (initial: Buffer) => { calls.push(initial.length); return generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: preview, initial }); };
+    const withDepth: number[] = [];
+    const without: number[] = [];
+    await guardedTailRead(s, { site: 'fleet', variant: `scrollback:${preview}`, historyRows: preview, parse: parse(withDepth) });
+    await guardedTailRead(s, { site: 'stallwatch', variant: `scrollback:${preview}`, parse: parse(without) });
+    expect(withDepth[0]).toBe(without[0]);
+    expect(withDepth[0]).toBeLessThan(TAIL_BYTES + 64 * 1024);
+  });
+
+  it('falls back to the whole ring when line feeds do not scroll (a progress line rewritten in place)', async () => {
+    const progress = Array.from({ length: 6000 }, (_, i) => `\x1b[2Kprogress ${i}\r\n\x1b[1A`).join('');
+    const s = session([...lines(1024 * 1024), '\x1b[10;1H', progress]);
+    const full = texts(await queuedTextSnapshot(table(s), 'pane', DEPTH));
+    const read = await queuedTextTail(table(s), 'pane', DEPTH, 'read');
+    expect(read?.via).toBe('full');
+    expect(texts(read)).toEqual(full);
+    expect(tailReadCounters().read.fallbacks).toEqual({ 'unknown-visible': 1 });
+  });
+
+  it('falls back to the whole ring on a hazard before the cut (scroll margins)', async () => {
+    const s = session(['\x1b[1;20r', ...lines(1400 * 1024)]);
+    const full = texts(await queuedTextSnapshot(table(s), 'pane', DEPTH));
+    const read = await queuedTextTail(table(s), 'pane', DEPTH, 'read');
+    expect(read?.via).toBe('full');
+    expect(texts(read)).toEqual(full);
+    expect(tailReadCounters().read.fallbacks).toEqual({ margins: 1 });
+  });
+
+  it('reads the whole ring straight away when the history needs more than half of it', async () => {
+    const s = session(lines(3 * 1024 * 1024, 0, 'y'.repeat(300))); // ~330-byte lines: 5048 of them pass 1 MiB
+    const { calls, parse } = deepCounting();
+    const read = await guardedTailRead(s, { site: 'read', variant: `scrollback:${DEPTH}`, historyRows: DEPTH, parse });
+    expect(read.via).toBe('full');
+    expect(calls).toEqual([expect.any(Number)]);
+    expect(calls[0]).toBeGreaterThanOrEqual(s.ringBuffer.size);
+    expect(tailReadCounters().read.fallbacks).toEqual({ 'too-deep': 1 });
+  });
+
+  it('keeps the 256 KiB cut on the alternate screen, which holds no history: no deep tail back past the switch', async () => {
+    const ticks = Array.from({ length: 60_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '0')}`).join('');
+    const s = session([...lines(1024 * 1024), '\x1b[?1049h\x1b[2J', ...Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hrow ${r}`), ticks]);
+    const { calls, parse } = deepCounting();
+    await guardedTailRead(s, { site: 'read', variant: `scrollback:${DEPTH}`, historyRows: DEPTH, parse });
+    expect(calls[0]).toBeLessThan(TAIL_BYTES + 64 * 1024);
+    expect(tailReadCounters().read.fallbacks).not.toHaveProperty('screen-switch');
+  });
+
+  it('a capped deep read tries the tail again only once its own tail length of output has arrived', async () => {
+    const progress = (from: number, n: number) => Array.from({ length: n }, (_, i) => `\x1b[2Kprogress ${from + i} ${'p'.repeat(60)}\r\n\x1b[1A`).join('');
+    const s = session([...lines(1024 * 1024), '\x1b[10;1H', progress(0, 7000)]);
+    const read = async () => {
+      const { calls, parse } = deepCounting();
+      await guardedTailRead(s, { site: 'read', variant: `scrollback:${DEPTH}`, historyRows: DEPTH, parse });
+      return calls.length;
+    };
+    for (let i = 0; i < TAIL_MISS_CAP; i++) expect(await read()).toBe(2);
+    const tailBytes = (DEPTH + 2 * ROWS) * progress(0, 1).length; // ~430 KiB: past the 256 KiB a shallow tail waits for
+    expect(tailBytes).toBeGreaterThan(TAIL_BYTES + 64 * 1024);
+    s.ringBuffer.write(Buffer.from(progress(7000, Math.ceil((TAIL_BYTES + 32 * 1024) / progress(0, 1).length))));
+    expect(await read()).toBe(1);
+    s.ringBuffer.write(Buffer.from(progress(20_000, Math.ceil(tailBytes / progress(0, 1).length) - Math.ceil((TAIL_BYTES + 32 * 1024) / progress(0, 1).length) + 100)));
+    expect(await read()).toBe(2);
+  });
+});

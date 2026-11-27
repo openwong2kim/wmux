@@ -143,15 +143,17 @@ export async function queuedComposerRows(sessions: TextReadSessions, sessionId: 
 }
 
 /**
- * queuedTextSnapshot from the ring's newest 256 KiB when that gives the same
- * rows (guardedTailRead.ts), else from the whole ring. For display only (the
- * Fleet preview): its own kind, so its answers are never reused by, or joined
- * to, a whole-ring read.
+ * queuedTextSnapshot from the ring's newest bytes when that gives the same
+ * rows (guardedTailRead.ts), else from the whole ring: the newest 256 KiB, or
+ * as far back as fills `scrollback` rows of history. For display and search
+ * (the Fleet preview, daemon.readSessionText), never for a safety gate: its
+ * own kind, so its answers are never reused by, or joined to, a whole-ring read.
  */
 export function queuedTextTail(sessions: TextReadSessions, sessionId: string, scrollback: number, site: TailSite): Promise<TailOutcome | null> {
-  return queuedSessionRead(sessions, sessionId, `text-tail:${scrollback}`, (managed) => {
+  // The site is in the kind: a read never joins or reuses another site's job, so each site's counters and miss runs see all its reads.
+  return queuedSessionRead(sessions, sessionId, `text-tail:${site}:${scrollback}`, (managed) => {
     const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback };
-    return guardedTailRead(managed, { site, variant: `scrollback:${scrollback}`, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
+    return guardedTailRead(managed, { site, variant: `scrollback:${scrollback}`, historyRows: scrollback, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
   }, scrollback <= REUSE_MAX_SCROLLBACK);
 }
 

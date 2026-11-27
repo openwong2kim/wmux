@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import type { TailReadCounters } from '../shared/memoryDiagnostics';
 import type { TextSnapshotOutcome, TextSnapshotRow } from './HeadlessSnapshot';
 import type { RingBuffer } from './RingBuffer';
-import { UNKNOWN_CELL, readRingWithModes, tailCut, withUnknownCells } from './sessionTextReplay';
+import { UNKNOWN_CELL, lineCut, tailCut, withUnknownCells } from './sessionTextReplay';
 import { screenCheckpointBytes, screenReplay, takeScreenCheckpoint, type CheckpointRing } from './screenCheckpoint';
 import { enqueueSnapshotJob } from './HeadlessSnapshot';
 import { TailHazardScan, type TailHazard } from './tailHazards';
@@ -20,9 +20,14 @@ import type { OutputModeTracker } from './util/outputModeTracker';
  * does too. A fallback replays the same ring copy, in the same queue job, so
  * it is the answer the whole-ring read would have given at the same fence.
  *
- * For readers that only display or estimate (Fleet's preview, StallWatch).
- * Safety gates keep reading the whole ring: the caller picks a separate read
- * kind, so a tail answer is never cached or joined under a whole-ring kind.
+ * For readers that display, estimate or search (Fleet's preview, StallWatch,
+ * and daemon.readSessionText unless it asks for the whole ring). Safety gates
+ * keep reading the whole ring: the caller picks a separate read kind, so a
+ * tail answer is never cached or joined under a whole-ring kind.
+ *
+ * A read that keeps history (`historyRows`) starts its tail far enough back
+ * to fill that history (#3510): with 256 KiB a deep read always missed, since
+ * the tail's first, partly unknown rows were still among the rows it returns.
  *
  * A read of the visible screen only (variant 'screen') falls back to the
  * screen read queuedScreenText makes instead: the ring's screen checkpoint
@@ -53,8 +58,8 @@ export const TAIL_MISS_CAP = 3;
 /** A capped reader tries the tail once more when output resumes after this long without any: the app may have redrawn. */
 export const TAIL_QUIET_RETRY_MS = 60_000;
 
-export type TailSite = 'fleet' | 'stallwatch';
-export type TailFallbackReason = TailHazard | 'no-modes' | 'unknown-visible' | 'tail-failed';
+export type TailSite = 'fleet' | 'stallwatch' | 'read';
+export type TailFallbackReason = TailHazard | 'no-modes' | 'unknown-visible' | 'tail-failed' | 'too-deep';
 /** `via` says which replay answered: the tail, or the whole ring. */
 export type TailOutcome = TextSnapshotOutcome & { via: 'tail' | 'full' };
 /** A site's decision inputs, compared by the real-data check. Values never leave this module. */
@@ -130,6 +135,14 @@ export interface GuardedTailOptions {
   /** The caller's parse: the same request the whole-ring read makes, given its bytes. */
   parse: (initial: Buffer) => Promise<TextSnapshotOutcome>;
   inputs?: TailInputs;
+  /**
+   * The history rows the parse keeps (its scrollback). The tail then starts
+   * at least `historyRows + 2 × rows` line feeds back, never later than the
+   * 256 KiB cut: its first screen (written over the unknown fill) has to
+   * scroll past the rows kept, which takes the screen's rows of scrolling on
+   * top of the history. A ring with fewer line feeds keeps the 256 KiB cut.
+   */
+  historyRows?: number;
 }
 
 const scans = new WeakMap<GuardedTailSession, TailHazardScan>();
@@ -150,13 +163,13 @@ function noteMiss(session: GuardedTailSession, key: string, cols: number, rows: 
 
 /**
  * Whether a capped reader tries the tail again: the pane was resized, the tail
- * window has turned over (a whole tail's worth of new bytes), or output moved
- * again after a long stretch without any. Reading a pane that is still quiet
- * would only miss again.
+ * window has turned over (`turnover`: a whole tail's worth of new bytes), or
+ * output moved again after a long stretch without any. Reading a pane that is
+ * still quiet would only miss again.
  */
-function retriesTail(run: MissRun, cols: number, rows: number, writtenAt: number): boolean {
+function retriesTail(run: MissRun, cols: number, rows: number, writtenAt: number, turnover: number): boolean {
   if (cols !== run.cols || rows !== run.rows) return true;
-  if (writtenAt - run.writtenAt >= TAIL_BYTES) return true;
+  if (writtenAt - run.writtenAt >= turnover) return true;
   if (writtenAt === run.seenWrittenAt) return false;
   const now = Date.now();
   const resumed = now - run.seenMovedAt >= TAIL_QUIET_RETRY_MS;
@@ -207,8 +220,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const data = session.ringBuffer.readAll();
   const writtenAt = session.ringBuffer.totalBytesWritten;
   const ringStart = writtenAt - data.length;
-  const full = screen ? null : readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
-  const wholeReplay = (): Buffer => full ?? readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
+  // The whole ring's replay is built only when a read needs it; its preamble is taken now, with the bytes.
+  const wholeLead = screen ? '' : (modes?.preamble(ringStart) ?? '');
+  const wholeReplay = (): Buffer => (wholeLead ? Buffer.concat([Buffer.from(wholeLead, 'utf8'), data]) : data);
   time(c, 'ringCopyMs', performance.now() - started);
   /** The fallback's answer: the screen read's (its unknown cells blanked), or the whole ring's. */
   const parseFallback = async (): Promise<TextSnapshotOutcome> => {
@@ -240,7 +254,12 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
 
   // A TUI that repaints by position writes few line feeds: one far past the
   // edge would leave almost nothing to replay, so start at an escape instead.
-  const cut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
+  const byteCut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
+  // Fewer line feeds than that in the whole ring (a TUI that draws by position): the byte cut, as before.
+  // The alternate screen keeps no history, so its reads keep the byte cut too.
+  const deep = options.historyRows !== undefined && modes?.altScreen !== true;
+  const rowCut = deep ? lineCut(data, (options.historyRows ?? 0) + 2 * rows) || byteCut : byteCut;
+  const cut = Math.min(byteCut, rowCut);
   if (cut === 0) {
     // The whole ring fits: the tail is the whole replay. A screen read's is its checkpoint's, which may
     // still hold cells a wrapped ring dropped (else the same whole ring).
@@ -250,11 +269,14 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
     return { ...answer, via: 'tail' };
   }
   if (!modes) return fallback('no-modes');
+  // A history this deep needs most of the ring: a tail parse that missed would
+  // cost about a whole parse more, so read the whole ring straight away.
+  if (rowCut < byteCut && data.length - cut > data.length / 2) return fallback('too-deep');
 
   const key = runKey(options);
   const run = missRuns.get(session)?.get(key);
   // Capped: straight to the whole ring, without the scan or the tail parse.
-  if (run && run.misses >= TAIL_MISS_CAP && !retriesTail(run, cols, rows, writtenAt)) return fallback(null);
+  if (run && run.misses >= TAIL_MISS_CAP && !retriesTail(run, cols, rows, writtenAt, Math.max(TAIL_BYTES, data.length - cut))) return fallback(null);
 
   const scanStarted = performance.now();
   let scan = scans.get(session);

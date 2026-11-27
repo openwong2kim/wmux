@@ -3595,11 +3595,13 @@ function registerRpcHandlers(
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
-    // `tail`: a display-only read (Fleet's preview is the one caller that asks),
-    // answered from the ring's newest bytes when that gives the same rows.
-    const outcome = p.tail === true
-      ? await queuedTextTail(sessionManager, p.id, scrollback, 'fleet')
-      : await queuedTextSnapshot(sessionManager, p.id, scrollback);
+    // Answered from the ring's newest bytes when that gives the same rows, else
+    // from the whole ring in the same job (#3510): a whole-ring parse per read
+    // queued every read behind the others while panes wrote heavily. `tail:
+    // true` is Fleet's preview, counted apart; `tail: false` asks for the whole ring.
+    const outcome = p.tail === false
+      ? await queuedTextSnapshot(sessionManager, p.id, scrollback)
+      : await queuedTextTail(sessionManager, p.id, scrollback, p.tail === true ? 'fleet' : 'read');
     if (!outcome) throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     if (!outcome.ok) {
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);

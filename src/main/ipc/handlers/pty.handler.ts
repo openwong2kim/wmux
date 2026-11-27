@@ -2456,7 +2456,7 @@ export function registerPTYHandlers(
     }
     const scrollback = opts?.scrollback;
     try {
-      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback, ...(opts?.tail === true ? { tail: true } : {}) }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
+      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback, ...(typeof opts?.tail === 'boolean' ? { tail: opts.tail } : {}) }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
         mode: 'rows' | 'unavailable';
         rows?: Array<{ text: string; wrapped: boolean }>;
         bufferType?: 'normal' | 'alternate';
