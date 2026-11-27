@@ -324,8 +324,7 @@ pub struct NativeTerminal {
     requested_scrollback: u32,
     /// `feed_xterm` state besides the grid.
     feed: XtermFeed,
-    /// Why the ANSI snapshot of this stream cannot match xterm's, for good
-    /// (an alternate screen's width change is XtermFeed::alt_reflow).
+    /// Why the ANSI snapshot of this stream cannot match xterm's, for good.
     refusal: Option<&'static str>,
     /// Bytes scanned past the refusal for other refusal families (at most
     /// REFUSAL_SCAN_BYTES).
@@ -980,10 +979,6 @@ struct XtermFeed {
     /// feed goes on past the first refusal, so the counters can tell what
     /// else a refused stream holds (NativeTerminal::refusal_families).
     seen: Families,
-    /// The alternate screen changed width with a soft-wrapped row on it
-    /// (NativeTerminal::resize). Unlike the other refusals this one ends:
-    /// leaving that screen discards the rows that differ.
-    alt_reflow: bool,
     /// The sequence just tracked resets 47, 1047 or 1049, or is RIS: it may
     /// leave the alternate screen, whatever this tracker thinks is shown.
     may_leave_alt: bool,
@@ -1720,17 +1715,6 @@ impl XtermFeed {
                         self.alt_overhang = false;
                     }
                 }
-                if self.alt_reflow && self.may_leave_alt {
-                    // Leaving the alternate screen, or a reset there, drops
-                    // its rows on both (xterm at once, Alacritty on the next
-                    // entry), and with them the wrap flags a width change
-                    // lost. Decided by Alacritty's own mode at this byte, not
-                    // this tracker's: past 32 parameters, for one, they
-                    // disagree on whether a leave happened.
-                    parser.advance(term, &data[from..at + len]);
-                    from = at + len;
-                    self.alt_reflow = alternate_shown(parser, term);
-                }
             }
             printed = false;
         }
@@ -2212,8 +2196,9 @@ fn text_row(
         fallible::try_reserve_str(&mut plain, columns, TEXT_SNAPSHOT)?;
     }
     let push = |s: &mut String, c: char| fallible::try_push(s, c, TEXT_SNAPSHOT);
-    for x in 0..columns {
-        let cell = &line[Column(x)];
+    // xterm's line keeps the cells a narrower alternate screen hides, and its
+    // text read returns them: so does this one.
+    for cell in (0..columns).map(|x| &line[Column(x)]).chain(line.hidden_cells()) {
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
         }
@@ -2517,25 +2502,6 @@ impl NativeTerminal {
                     self.refusal.get_or_insert(HISTORY_LIMIT);
                 }
             }
-            // xterm never reflows or cuts the alternate screen: its rows keep
-            // their cells and wrap flags across a resize. The vendored grid keeps
-            // a row's cells past a narrower width and shows them again when it
-            // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
-            // but a width change with a soft-wrapped row on screen loses the
-            // flags, until the screen is left.
-            if term.mode().contains(TermMode::ALT_SCREEN) {
-                let grid = term.grid();
-                let old = grid.columns();
-                if old != cols as usize
-                    && (0..grid.screen_lines() as i32).any(|y| {
-                        grid[Line(y)][Column(old - 1)]
-                            .flags
-                            .contains(Flags::WRAPLINE)
-                    })
-                {
-                    self.feed.alt_reflow = true;
-                }
-            }
             // xterm resizes its alternate screen's cursor without a reflow, and
             // the round trip's `?47l` then hands it to the main screen.
             let resized =
@@ -2718,11 +2684,6 @@ impl NativeTerminal {
                 }
                 if let Some(refusal) = self.refusal {
                     return Err(CallError::reason(refusal));
-                }
-                if self.feed.alt_reflow {
-                    return Err(CallError::reason(
-                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-                ));
                 }
                 if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
                     && [term.grid(), term.inactive_grid()]
@@ -4175,41 +4136,6 @@ mod tests {
         assert!(divergent(&["ab\x1b[4;9r"]));
         assert!(!divergent(&["ab\x1b[3;3r"]), "both ignore it");
         assert!(!divergent(&["ab\x1b[2;9r"]), "both apply it");
-    }
-
-    #[test]
-    fn leaving_the_alternate_screen_lifts_its_width_change() {
-        // As NativeTerminal::resize leaves it after a width change there.
-        let lifted = |chunks: &[&str]| {
-            let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
-            let mut parser: Processor = Processor::new();
-            let mut feed = XtermFeed::default();
-            feed.feed(&mut parser, &mut term, b"\x1b[?1049h").unwrap();
-            feed.alt_reflow = true;
-            for chunk in chunks {
-                feed.feed(&mut parser, &mut term, chunk.as_bytes()).unwrap();
-            }
-            !feed.alt_reflow
-        };
-        assert!(lifted(&["x\x1b[?1049l"]));
-        assert!(lifted(&["\x1b[?10", "49l"]), "split across chunks");
-        // Left and entered again in one chunk: the new screen is a fresh one.
-        assert!(lifted(&["\x1b[?1049l$ less\r\n\x1b[?1049hpage"]));
-        assert!(!lifted(&["more output"]));
-        assert!(!lifted(&["\x1b[?1049h"]), "entering again while on it");
-        assert!(lifted(&["\x1bc"]), "a reset leaves it too");
-        assert!(
-            lifted(&["\x1b[?2026h\x1b[?1049l"]),
-            "inside a synchronized update"
-        );
-        // Past 32 parameters Alacritty (and xterm) drop the rest: no leave,
-        // though this tracker reads every one.
-        let overflow = format!("\x1b[?{}1049l", "1;".repeat(32));
-        assert!(!lifted(&[overflow.as_str()]));
-        assert!(
-            lifted(&[overflow.as_str(), "\x1b[?1049l"]),
-            "a real leave after it"
-        );
     }
 
     #[test]
