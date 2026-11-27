@@ -13,7 +13,7 @@ import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays';
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
-import { UNSEEN_INPUT_CHAT_DETAIL, claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
+import { SURVEY_CHAT_DETAIL, UNSEEN_INPUT_CHAT_DETAIL, claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { openClaudeRewind } from '../transcript/openClaudeRewind';
 import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
@@ -760,6 +760,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let enterNext = false;
     // The composer could not be seen whole: an `unconfirmed` then says that, not "a draft".
     let unseen = false;
+    let survey = false;
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
@@ -807,6 +808,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(opts.steer ? { steer: true } : {}),
         ...(opts.onScreenHold ? { onScreenHold: opts.onScreenHold } : {}),
         onInputUnseen: () => { unseen = true; },
+        onSurvey: () => { survey = true; },
         ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
           let ok = false;
           try { ok = await authorize(stage); } catch { /* a failed check is a refusal */ }
@@ -838,7 +840,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (wrote) return { result: 'error', effect: 'uncertain', error: 'send-interrupted' };
       switch (result) {
         case 'busy': return { result, effect: 'none', error: 'chat-busy' };
-        case 'blocked': return { result, effect: 'none', error: 'chat-blocked', blockedBy: blockedBy(id) };
+        case 'blocked': return { result, effect: 'none', error: 'chat-blocked', blockedBy: blockedBy(id), ...(survey ? { detail: SURVEY_CHAT_DETAIL } : {}) };
         case 'session_changed': return sessionChanged(id);
         case 'unconfirmed': return { result, effect: 'none', error: 'input-not-provably-empty', ...(unseen ? { detail: UNSEEN_INPUT_CHAT_DETAIL } : {}) };
         case 'unavailable':
