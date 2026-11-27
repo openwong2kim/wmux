@@ -26,7 +26,9 @@ function makeFakePty(): { pty: IPty; feed: (data: string) => void; exit: () => v
       return { dispose: () => { exitHandler = null; } };
     },
   } as unknown as IPty;
-  return { pty, feed: (data) => dataHandler?.(data), exit: () => exitHandler?.({ exitCode: 0 }) };
+  // The bridge analyses a chunk after forwarding it (M3 A1): one turn of
+  // the (fake) event loop lets that analysis run, as it did inside the call.
+  return { pty, feed: (data) => { dataHandler?.(data); vi.advanceTimersByTime(0); }, exit: () => exitHandler?.({ exitCode: 0 }) };
 }
 
 describe('DaemonPTYBridge — OSC 7501 program status', () => {

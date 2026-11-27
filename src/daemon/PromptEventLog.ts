@@ -31,12 +31,22 @@ export class PromptEventLog {
   private readonly capacity: number;
   /** Sticky: this shell has emitted a command-start (C) at least once. */
   private sawCommandStart = false;
+  /**
+   * Run before every read. The PTY bridge appends events from analysis that
+   * runs after a chunk is forwarded; its hook lets a reader outside the bridge
+   * see every chunk already in the ring (DaemonPTYBridge.flushPendingDetection).
+   */
+  private beforeRead: (() => void) | null = null;
 
   constructor(capacity = 256) {
     if (capacity <= 0 || !Number.isInteger(capacity)) {
       throw new Error('capacity must be a positive integer');
     }
     this.capacity = capacity;
+  }
+
+  setBeforeRead(hook: (() => void) | null): void {
+    this.beforeRead = hook;
   }
 
   append(event: PromptEvent): void {
@@ -50,12 +60,14 @@ export class PromptEventLog {
 
   /** Return the N most recent events, oldest-first. */
   recent(n: number): PromptEvent[] {
+    this.beforeRead?.();
     if (n <= 0) return [];
     return this.events.slice(-n);
   }
 
   /** Return all events with byteOffset strictly greater than `offset`. */
   since(offset: number): PromptEvent[] {
+    this.beforeRead?.();
     return this.events.filter((e) => e.byteOffset > offset);
   }
 
@@ -65,6 +77,7 @@ export class PromptEventLog {
    * present (need matching command_start / command_end).
    */
   lastCompletedCommandRange(): { startOffset: number; endOffset: number; exitCode: number | null } | null {
+    this.beforeRead?.();
     // Walk backwards for the newest command_end, then pair with its command_start
     for (let i = this.events.length - 1; i >= 0; i--) {
       const end = this.events[i];
@@ -99,6 +112,7 @@ export class PromptEventLog {
    * `size > 0` first and treat an empty log as "unknown" (heuristic fallback).
    */
   isCommandRunning(): boolean {
+    this.beforeRead?.();
     for (let i = this.events.length - 1; i >= 0; i--) {
       const t = this.events[i].type;
       if (t === 'command_start') return true;
@@ -117,6 +131,7 @@ export class PromptEventLog {
    * process truth. Sticky across FIFO eviction: one C is proof enough.
    */
   commandRunningIfKnown(): boolean | undefined {
+    this.beforeRead?.();
     return this.sawCommandStart ? this.isCommandRunning() : undefined;
   }
 
@@ -132,6 +147,7 @@ export class PromptEventLog {
    * parse never shows PS0 (no C), but its D carries status 2.
    */
   exitAfterPrompt(): number | undefined {
+    this.beforeRead?.();
     for (let i = this.events.length - 1; i >= 0; i--) {
       const e = this.events[i];
       if (e.type === 'command_start') return undefined;
@@ -145,6 +161,7 @@ export class PromptEventLog {
   }
 
   get size(): number {
+    this.beforeRead?.();
     return this.events.length;
   }
 
@@ -155,6 +172,7 @@ export class PromptEventLog {
 
   /** Test / debugging aid — returns a shallow copy. */
   snapshot(): PromptEvent[] {
+    this.beforeRead?.();
     return this.events.slice();
   }
 }

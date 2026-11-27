@@ -213,6 +213,7 @@ import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../sh
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
 import { deliveryFrameOf } from './deliveryComposer';
 import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, releaseScreenRepairLineage, takeScreenCheckpoint } from './screenCheckpoint';
+import { startLoopSaturationMonitor } from './loopSaturation';
 import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
@@ -1359,6 +1360,8 @@ function markDaemonBoot(name: string): void {
 // hung one and skip a false-positive respawn under CPU load.
 const eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 });
 eventLoopMonitor.enable();
+// The PTY bridges analyse output inline while the loop runs late (loopSaturation.ts).
+startLoopSaturationMonitor();
 
 // Install the file log sink before any log() / console.* call below. The
 // launcher spawns this process with `stdio: 'ignore'`, so without this
