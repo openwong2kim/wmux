@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolvePtyCreateCwd, resolvePtyCreateCwdForShell, validatePtyCwd } from '../resolvePtyCwd';
@@ -74,6 +75,7 @@ describe('resolvePtyCreateCwd', () => {
     }, () => undefined)).toEqual({
       incomingCwd: 'D:\\missing',
       source: 'recovery-home',
+      missingCwd: 'E:\\missing',
     });
   });
 
@@ -107,5 +109,31 @@ describe.runIf(process.platform === 'win32')('WSL cwd handoff', () => {
       spawnCwd: 'C:\\Users\\user', cwd: '~/project',
     }, 'wsl.exe')).toEqual({ incomingCwd: '~/project', safeCwd: '~/project', source: 'recovery-cwd' });
     expect(stat).not.toHaveBeenCalled();
+  });
+});
+
+// #3443 — the folder a create wanted, gone, is named so the pane can say it
+// opened in home; a folder that is only refused (a file) is not "gone".
+describe('resolvePtyCreateCwd — missingCwd', () => {
+  const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cwd-'));
+
+  it('names a requested folder that no longer exists', () => {
+    const gone = path.join(tmp(), 'removed');
+    expect(resolvePtyCreateCwd(gone, undefined)).toMatchObject({ safeCwd: undefined, missingCwd: gone });
+  });
+
+  it('names the live recovery folder first when neither recovery folder exists', () => {
+    const root = tmp();
+    const live = path.join(root, 'live');
+    const spawn = path.join(root, 'spawn');
+    expect(resolvePtyCreateCwd(undefined, { cwd: live, spawnCwd: spawn })).toMatchObject({ source: 'recovery-home', missingCwd: live });
+  });
+
+  it('does not name a folder that exists, or a path that is a file', () => {
+    const root = tmp();
+    const file = path.join(root, 'f');
+    fs.writeFileSync(file, '');
+    expect(resolvePtyCreateCwd(root, undefined).missingCwd).toBeUndefined();
+    expect(resolvePtyCreateCwd(file, undefined).missingCwd).toBeUndefined();
   });
 });

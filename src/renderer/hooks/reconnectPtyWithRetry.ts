@@ -54,6 +54,8 @@ export interface ReconnectResult {
   /** The session's stored PTY geometry, reported on success. */
   cols?: number;
   rows?: number;
+  /** #3443 — on success: the folder the daemon could not recover the session in (gone), so it started in home. */
+  lostCwd?: string;
 }
 
 /** Why an attempt settled without a session pipe; absent once it attached (except `promoted`). */
@@ -100,6 +102,8 @@ export interface ReconnectDeps {
   requestReconcile?: (reason: string) => boolean;
   /** #2398 — record whether the bound session was left suspended (deferred). */
   setDeferred?: (id: string, deferred: boolean) => void;
+  /** #3443 — tell the pane once that its folder was gone and it started in home. */
+  onLostCwd?: (id: string, folder: string) => void;
   /** Sleep between retries. Injectable so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
   /** Optional structured logger. Defaults to console. */
@@ -160,6 +164,7 @@ export async function reconnectPtyWithRetry(
       if (!isCurrent()) return null;
       deps.setUnconfirmed?.(ptyId, false);
       deps.setDeferred?.(ptyId, false);
+      if (result.lostCwd) deps.onLostCwd?.(ptyId, result.lostCwd);
       if (started) deps.onRecoveryError?.(null, { promoted: true });
       else deps.onRecoveryError?.(null);
       return result.cols && result.rows ? { cols: result.cols, rows: result.rows } : null;

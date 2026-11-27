@@ -1508,6 +1508,7 @@ export const en = {
   'terminal.catchingUp': 'catching up…',
   'terminal.staleScreen': 'screen may be stale — will retry',
   'terminal.reattaching': 'reattaching…',
+  'terminal.cwdMissingHome': '{folder} no longer exists, so this terminal opened in your home folder.',
   'terminal.createFailed': 'This terminal could not start.',
   'terminal.retryCreate': 'Try again',
   'terminal.notStarted': 'Starts when opened',

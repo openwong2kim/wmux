@@ -2228,6 +2228,7 @@ export function registerPTYHandlers(
           holdReason?: 'terminal-core-missing';
           incarnationId?: string;
           startPending?: boolean;
+          lostCwd?: string;
         }>;
         if (!sessions.some(s => s.id === id)) {
           sessions = await daemonClient.rpc('daemon.listSessions', { includeSuspended: true }) as typeof sessions;
@@ -2366,7 +2367,7 @@ export function registerPTYHandlers(
         recordPtyShell(session.id, session.cmd);
         // The session's stored geometry: a hidden pane cannot measure its own,
         // so it adopts this one instead (see the reattach in useTerminal).
-        return { success: true, id: session.id, shell: session.cmd, cols: session.cols, rows: session.rows, ...startedHere() };
+        return { success: true, id: session.id, shell: session.cmd, cols: session.cols, rows: session.rows, ...(typeof session.lostCwd === 'string' && session.lostCwd ? { lostCwd: session.lostCwd } : {}), ...startedHere() };
       } catch (err) {
         // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).
         // This is a transient infrastructure failure, NOT proof the session is

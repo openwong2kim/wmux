@@ -21,6 +21,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { claimsBookmarkKey, keepAcrossRepaint as keepBookmarksAcrossRepaint } from '../components/Terminal/scrollbackBookmarks';
 import { t } from '../i18n';
+import { noticeMissingCwd } from './missingCwdNotice';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
 import { resolveMinimumContrastRatio } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
@@ -826,6 +827,7 @@ function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean, onRecove
     // a stop key (joinOnly) does not even start an exec or supervised unit.
     reconnect: (id) => window.electronAPI.pty.reconnect(id, joinOnly ? { promote, joinOnly } : { promote }),
     setDeferred: (id, deferred) => useStore.getState().setPtyDeferred?.(id, deferred),
+    onLostCwd: noticeMissingCwd,
     onRecoveryError,
     clearPtyId: (id, recovery) => useStore.getState().clearSurfacePtyIdByPty(id, recovery),
     setUnconfirmed: (id, unconfirmed) => useStore.getState().setPtysUnconfirmed([id], unconfirmed),
