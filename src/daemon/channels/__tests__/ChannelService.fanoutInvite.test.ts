@@ -26,6 +26,7 @@ function makeFakeWriter(initial?: ChannelState) {
       lastSaved = state;
       return true;
     }),
+    loadWithStatus() { return { status: 'loaded' as const, state: this.load() }; },
     load: vi.fn((): ChannelState => (lastSaved ? JSON.parse(JSON.stringify(lastSaved)) : freshState())),
   };
 }

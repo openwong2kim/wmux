@@ -25,7 +25,7 @@ import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
 import WorkspacePrepCards from './WorkspacePrepCards';
 import type { Workspace } from '../../../shared/types';
-import { getWorkspacePtyIds } from '../../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import { useT } from '../../hooks/useT';
@@ -49,6 +49,7 @@ import {
 import PresetPicker from './PresetPicker';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { listedWorkspaces, refuseWorkspaceClose } from '../Moa/moaHqGuard';
+import { anyEditorDirty, confirmScratchDrop } from '../Editor/dirtyEditors';
 
 
 
@@ -311,9 +312,11 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     if (refuseWorkspaceClose(wsId)) return;
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
-    if (ws) disposeAllPtys(ws);
-
-    removeWorkspace(wsId);
+    // Unsaved editor scratch text is lost with the workspace: ask first.
+    confirmScratchDrop(!!ws && anyEditorDirty(getWorkspaceLeafPanes(ws)), () => {
+      if (ws) disposeAllPtys(ws);
+      removeWorkspace(wsId);
+    });
   }, [removeWorkspace]);
 
   // #1011 — archive: the same teardown as Close (sessions die — quieting the

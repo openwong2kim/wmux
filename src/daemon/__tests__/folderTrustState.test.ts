@@ -78,7 +78,13 @@ function mutedSession(restored: string) {
     ringBuffer: ring,
     bridge,
   };
-  const feed = (text: string): void => handler?.({ text, byteLength: Buffer.byteLength(text), readBytes: () => Buffer.from(text), dispose: () => undefined } as unknown as NativeOutputChunk);
+  // The bridge analyses a chunk after forwarding (or holding) it (M3 A1); the
+  // flush runs that analysis now, as it ran inside the call, so a parse's
+  // time budget does not pay for a backlog only a test can build in one tick.
+  const feed = (text: string): void => {
+    handler?.({ text, byteLength: Buffer.byteLength(text), readBytes: () => Buffer.from(text), dispose: () => undefined } as unknown as NativeOutputChunk);
+    bridge.flushPendingDetection();
+  };
   return { session: s, bridge, ring, feed };
 }
 

@@ -155,6 +155,45 @@ export const FLAVOURS = {
     logFile: 'qwen-hooks.log',
     requestPrefix: 'qwen-hook',
   },
+  // Oh My Pi (omp). omp runs no hook commands; wmux's extension module
+  // (integrations/omp/extensions/wmux.js) spawns this bridge per lifecycle
+  // event with omp's own event name in argv and only {session_id, cwd} on
+  // stdin. Measured live on omp 19.2.1 (macOS, 2026-11-26).
+  omp: {
+    agent: 'omp',
+    events: {
+      session_start: { kind: 'agent.session_start' },
+      before_agent_start: { kind: 'agent.user_prompt_submit' },
+      agent_end: { kind: 'agent.stop' },
+      tool_approval_requested: { kind: 'agent.awaiting_input' },
+      tool_approval_resolved: { kind: 'agent.input_answered' },
+      session_shutdown: { kind: 'agent.session_end' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: null,
+    logFile: 'omp-hooks.log',
+    requestPrefix: 'omp-hook',
+  },
+  // jcode observer hooks (~/.jcode/config.toml `[hooks]`, docs/HOOKS.md).
+  // jcode passes no JSON on stdin: its entry point
+  // (integrations/jcode/bin/wmux-jcode-bridge.mjs) turns the JCODE_HOOK_*
+  // environment into {hook_event_name, session_id, cwd, source}, with jcode's
+  // `create` start already translated to `startup`. Documented, not measured.
+  jcode: {
+    agent: 'jcode',
+    events: {
+      session_start: { kind: 'agent.session_start' },
+      turn_start: { kind: 'agent.user_prompt_submit' },
+      turn_end: { kind: 'agent.stop' },
+      session_end: { kind: 'agent.session_end' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: 'source',
+    logFile: 'jcode-hooks.log',
+    requestPrefix: 'jcode-hook',
+  },
 };
 
 // A SessionStart `source` (read from the flavour's `sourceField`) is forwarded
@@ -497,7 +536,7 @@ export function buildHookEnvelope(flavourId, payload, { env = process.env, now =
  * (integrations/kiro/bin/wmux-kiro-bridge.mjs) can run the shared path with its
  * flavour fixed.
  */
-export async function runHook(flavourId, argvEvent) {
+export async function runHook(flavourId, argvEvent, options = {}) {
   if (!flavourFor(flavourId)) {
     // Length-capped: argv is caller-controlled, but it is not payload content.
     logEvent(undefined, 'unknown-flavour', { flavour: String(flavourId ?? '').slice(0, 32) });
@@ -505,7 +544,10 @@ export async function runHook(flavourId, argvEvent) {
   }
   let payload;
   try {
-    payload = await readStdin();
+    // An entry point whose host passes no stdin (jcode) hands over the payload
+    // it built, so stdin is never read and an inherited terminal cannot hold
+    // the hook open.
+    payload = Object.hasOwn(options, 'payload') ? options.payload : await readStdin();
   } catch {
     // Parse diagnostics can quote the input; never copy them to the log.
     logEvent(flavourId, 'malformed-stdin');
@@ -560,13 +602,13 @@ export async function runHook(flavourId, argvEvent) {
  * bounds the SEND; a stdin that never reaches EOF would hang before that), and
  * an explicit exit 0 so a stray listener cannot hold the turn open.
  */
-export function runHookProcess(flavourId, argvEvent) {
+export function runHookProcess(flavourId, argvEvent, options = {}) {
   const watchdog = setTimeout(() => {
     logEvent(flavourId, 'watchdog-exit');
     process.exit(0);
   }, HOOK_TIMEOUT_MS * 2);
   watchdog.unref?.();
-  runHook(flavourId, argvEvent)
+  runHook(flavourId, argvEvent, options)
     .catch((err) => logEvent(flavourId, 'uncaught', { error: String(err) }))
     .finally(() => process.exit(0));
 }

@@ -51,6 +51,18 @@ const bridges = [
     src: join(repoRoot, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'),
     dest: 'wmux-hooks-bridge.mjs',
   },
+  // omp extension module (#3276): `wmux setup-hooks --agent omp` copies it
+  // to ~/.omp/agent/extensions/wmux.js; it runs the shared bridge above.
+  {
+    src: join(repoRoot, 'integrations', 'omp', 'extensions', 'wmux.js'),
+    dest: 'wmux-omp-extension.js',
+  },
+  // jcode entry point (#3067): turns jcode's JCODE_HOOK_* environment into
+  // the shared bridge's payload; it imports wmux-hooks-bridge.mjs beside it.
+  {
+    src: join(repoRoot, 'integrations', 'jcode', 'bin', 'wmux-jcode-bridge.mjs'),
+    dest: 'wmux-jcode-bridge.mjs',
+  },
   {
     src: join(repoRoot, 'integrations', 'agy', 'bin', 'quota-sink.js'),
     dest: 'quota-sink.js',

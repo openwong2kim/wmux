@@ -205,6 +205,15 @@ export interface DaemonSession {
    */
   paneAccount?: { vendor: PaneAccountVendor };
   /**
+   * The pane's process spawned with a sign-in variable of an agent that can
+   * continue on another account (shared/agentAuthNames.ts), in its env, its
+   * spawn-only secrets or its restored credentials. Names only, set at every
+   * spawn. That sign-in outlives a config-folder move, so the pane is never
+   * moved to another account in place (`session.continueOnAccountV2`);
+   * absent reads as unknown and is refused the same way.
+   */
+  signInEnv?: boolean;
+  /**
    * Set once at `POST /api/sessions` (a pane a remote client created) and
    * carried across recovery. A detached pane carrying it ages out after
    * REMOTE_DURABLE_TTL_HOURS instead of the ordinary detached TTL, so a

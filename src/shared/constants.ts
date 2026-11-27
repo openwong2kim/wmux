@@ -171,6 +171,9 @@ export const IPC = {
   FANOUT_LIVE_CAP_SET: 'fanout:liveTaskCap:set',
   FANOUT_HOURLY_CAP_GET: 'fanout:hourlyTaskCap:get',
   FANOUT_HOURLY_CAP_SET: 'fanout:hourlyTaskCap:set',
+  // A2A task retention (#3068): days, or null for off.
+  A2A_TASK_RETENTION_GET: 'a2a:taskRetention:get',
+  A2A_TASK_RETENTION_SET: 'a2a:taskRetention:set',
   FANOUT_TASKS_PER_CALL_GET: 'fanout:tasksPerCall:get',
   FANOUT_TASKS_PER_CALL_SET: 'fanout:tasksPerCall:set',
   FANOUT_DEPTH_GET: 'fanout:depth:get',

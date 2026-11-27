@@ -53,5 +53,35 @@
     "sourceField": "source",
     "logFile": "qwen-hooks.log",
     "requestPrefix": "qwen-hook"
+  },
+  "omp": {
+    "agent": "omp",
+    "events": {
+      "session_start": { "kind": "agent.session_start" },
+      "before_agent_start": { "kind": "agent.user_prompt_submit" },
+      "agent_end": { "kind": "agent.stop" },
+      "tool_approval_requested": { "kind": "agent.awaiting_input" },
+      "tool_approval_resolved": { "kind": "agent.input_answered" },
+      "session_shutdown": { "kind": "agent.session_end" }
+    },
+    "sessionIdFields": ["session_id"],
+    "cwdFields": ["cwd"],
+    "sourceField": null,
+    "logFile": "omp-hooks.log",
+    "requestPrefix": "omp-hook"
+  },
+  "jcode": {
+    "agent": "jcode",
+    "events": {
+      "session_start": { "kind": "agent.session_start" },
+      "turn_start": { "kind": "agent.user_prompt_submit" },
+      "turn_end": { "kind": "agent.stop" },
+      "session_end": { "kind": "agent.session_end" }
+    },
+    "sessionIdFields": ["session_id"],
+    "cwdFields": ["cwd"],
+    "sourceField": "source",
+    "logFile": "jcode-hooks.log",
+    "requestPrefix": "jcode-hook"
   }
 }

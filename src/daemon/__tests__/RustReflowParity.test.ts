@@ -31,14 +31,9 @@ describe.skipIf(!available)('Rust ANSI snapshot parity across reflowing resizes'
     // terminal instead: in full, or, for a known gap, in full but that field.
     const referenceOff: string[] = [];
     const knownGaps: Record<string, (req: SnapshotRequest, payload: Buffer) => Promise<string | undefined>> = {
-      // The default saved row after a narrowing (no DECSC before it): the
-      // probe's ?1049l restores it a row off. Everything before that probe matches.
-      'random-3-14': async (req, payload) => {
-        const difference = await liveDifference(req, payload);
-        return difference?.startsWith('state 2: ') ? undefined : difference ?? 'no longer differs: move it out of the known gaps';
-      },
       // The row the history cap cut a paragraph at: a continuation on the
-      // live terminal, which no payload can begin with. The rest matches.
+      // live terminal, which no payload can begin with (an accepted
+      // deviation, _rustParity.ts). The rest matches.
       'random-3-50': (req, payload) => liveDifferenceExcept(req, payload, (state) => { if (state.rows[0]) state.rows[0].wrapped = false; }),
     };
     for (const c of randomResizeCases(3, 60)) {
@@ -66,6 +61,23 @@ describe.skipIf(!available)('Rust ANSI snapshot parity across reflowing resizes'
     // Most of them are served natively, in parity.
     expect(native).toBeGreaterThan(40);
   }, 120_000);
+
+  // xterm moves a cursor never saved with the rows a narrowing adds above it.
+  // xterm's own payload loses that row as well, so parity with it cannot see
+  // the loss: Rust is held to the live terminal, whose probe ?1049l restores
+  // that row (#3518).
+  it('restores a default saved row a narrowing moved, as the live terminal does', async () => {
+    const initial = Buffer.from('aaaaaaaaaaaaaaa\r\nb');
+    const req: SnapshotRequest = { cols: 10, rows: 4, scrollback: 100, initial,
+      geometry: { start: { cols: 20, rows: 4 }, changes: [{ offset: initial.length, cols: 10, rows: 4 }] } };
+    const rust = await generateRustSnapshot(req, 'ansi');
+    if (!rust.ok) throw new Error(`refused: ${rust.detail}`);
+    expect(await liveDifference(req, rust.payload)).toBeUndefined();
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    if (!reference.ok) throw new Error('reference failed');
+    expect(await liveDifference(req, reference.payload)).toBeDefined();
+  });
 
   it.each(knownGaps.map(c => [c.name, c] as const))('known gap, still diverges: %s', async (_name, c) => {
     await expectRustAloneDiverges(c);

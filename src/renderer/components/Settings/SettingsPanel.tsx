@@ -54,6 +54,7 @@ import {
   MAX_FANOUT_TASKS_PER_CALL,
 } from '../../../shared/fanoutTaskCaps';
 import { SettingLimitInput } from './SettingLimitInput';
+import { A2A_TASK_RETENTION_MAX_DAYS } from '../../../shared/a2aTaskCleanup';
 import {
   ADVERTISED_SHORTCUTS,
   builtinCombosFor,
@@ -2222,6 +2223,8 @@ function FanoutWorkersSection() {
   // null: no limit (the default).
   const [liveTaskCap, setLiveTaskCapState] = useState<number | null>(null);
   const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
+  // Main-side: days until a task still waiting to start is closed; null: off.
+  const [taskRetentionDays, setTaskRetentionDaysState] = useState<number | null>(null);
   const [tasksPerCall, setTasksPerCallState] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
   const [fanoutDepth, setFanoutDepthState] = useState(DEFAULT_FANOUT_DEPTH);
   // One saver per field, made once: each pairs its field with its own setter
@@ -2229,6 +2232,7 @@ function FanoutWorkersSection() {
   const [savers] = useState(() => ({
     live: createFanoutSaver<number | null>({ show: setLiveTaskCapState, save: (v) => window.electronAPI.fanout.setLiveTaskCap(v), reload: () => window.electronAPI.fanout.getLiveTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
     hourly: createFanoutSaver<number | null>({ show: setHourlyTaskCapState, save: (v) => window.electronAPI.fanout.setHourlyTaskCap(v), reload: () => window.electronAPI.fanout.getHourlyTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
+    retention: createFanoutSaver<number | null>({ show: setTaskRetentionDaysState, save: (v) => window.electronAPI.fanout.setTaskRetentionDays(v), reload: () => window.electronAPI.fanout.getTaskRetentionDays(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
     perCall: createFanoutSaver<number>({ show: setTasksPerCallState, save: (v) => window.electronAPI.fanout.setTasksPerCall(v), reload: () => window.electronAPI.fanout.getTasksPerCall(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_TASKS_PER_CALL }),
     depth: createFanoutSaver<number>({ show: setFanoutDepthState, save: (v) => window.electronAPI.fanout.setDepth(v), reload: () => window.electronAPI.fanout.getDepth(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_DEPTH }),
   }));
@@ -2267,6 +2271,11 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
         if (!cancelled && isFanoutLimit(v)) { setHourlyTaskCapState(v); savers.hourly.confirm(v); }
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTaskRetentionDays?.()
+      .then((v) => {
+        if (!cancelled && isFanoutLimit(v)) { setTaskRetentionDaysState(v); savers.retention.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTasksPerCall?.()
@@ -2343,6 +2352,7 @@ function FanoutWorkersSection() {
   // The field shows the value at once; main's reply (clamped) confirms it.
   const onLiveTaskCapChange = (next: number | null) => { void savers.live.change(next); };
   const onHourlyTaskCapChange = (next: number | null) => { void savers.hourly.change(next); };
+  const onTaskRetentionChange = (next: number | null) => { void savers.retention.change(next); };
   const onTasksPerCallChange = (next: number) => { void savers.perCall.change(next); };
   const onFanoutDepthChange = (next: number) => { void savers.depth.change(next); };
 
@@ -2444,6 +2454,20 @@ function FanoutWorkersSection() {
           noLimitLabel={t('settings.noLimit')}
           onCommit={onHourlyTaskCapChange}
           testId="fanout-hourly-cap"
+        />
+      </SettingRow>
+      <SettingRow
+        id="a2ataskretention"
+        label={t('settings.a2aTaskRetention')}
+        description={t('settings.a2aTaskRetentionDesc')}
+      >
+        <SettingLimitInput
+          value={taskRetentionDays}
+          max={A2A_TASK_RETENTION_MAX_DAYS}
+          label={t('settings.a2aTaskRetention')}
+          noLimitLabel={t('settings.a2aTaskRetentionOff')}
+          onCommit={onTaskRetentionChange}
+          testId="a2a-task-retention"
         />
       </SettingRow>
       <SettingRow

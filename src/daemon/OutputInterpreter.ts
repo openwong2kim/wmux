@@ -95,8 +95,9 @@ export class OutputInterpreter {
           return;
         }
       }
-      // As in the JS bridge, all mode updates precede OSC callbacks, and OSC
-      // callbacks precede agent interpretation and raw output forwarding.
+      // As in the JS bridge, all mode updates precede OSC callbacks. The
+      // daemon's bridge forwards a chunk before interpreting it (M3 A1), so
+      // nothing here runs ahead of the forward.
       if (events) for (let i = 0; i < events.codes.length; i++) {
         const event = { code: events.codes[i], data: events.data[i] };
         for (const callback of this.callbacks) callback(event);

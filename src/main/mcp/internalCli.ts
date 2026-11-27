@@ -69,6 +69,8 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.remote.spawnStatus',
   'a2a.remote.answer',
   'a2a.remote.approve',
+  // `wmux task cancel` (#3068): main takes the workspace from the caller's pane
+  'a2a.task.cancel',
   // terminal IO (`wmux input ...`)
   'input.send',
   'input.sendKey',

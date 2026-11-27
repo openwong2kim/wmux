@@ -882,6 +882,9 @@ const electronAPI = {
     setLiveTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number | null>,
     getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number | null>,
     setHourlyTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number | null>,
+    // A2A task retention in days; null: off.
+    getTaskRetentionDays: () => ipcRenderer.invoke(IPC.A2A_TASK_RETENTION_GET) as Promise<number | null>,
+    setTaskRetentionDays: (value: number | null) => ipcRenderer.invoke(IPC.A2A_TASK_RETENTION_SET, value) as Promise<number | null>,
     getTasksPerCall: () => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_GET) as Promise<number>,
     setTasksPerCall: (value: number) => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_SET, value) as Promise<number>,
     getDepth: () => ipcRenderer.invoke(IPC.FANOUT_DEPTH_GET) as Promise<number>,

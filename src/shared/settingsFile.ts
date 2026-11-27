@@ -116,6 +116,12 @@ function leadingBom(filePath: string): string {
  * whose readers do not all accept one.
  */
 export function writeJsonAtomic(filePath: string, data: unknown, options: { keepBom?: boolean } = {}): void {
+  writeTextAtomic(filePath, JSON.stringify(data, null, 2) + '\n', options);
+}
+
+/** {@link writeJsonAtomic} for text that is already serialised (a TOML file
+ *  edited line by line). */
+export function writeTextAtomic(filePath: string, text: string, options: { keepBom?: boolean } = {}): void {
   const target = resolveWriteTarget(filePath);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -126,7 +132,7 @@ export function writeJsonAtomic(filePath: string, data: unknown, options: { keep
     const fd = fs.openSync(tmp, 'w', mode);
     try {
       const bom = options.keepBom ? leadingBom(target) : '';
-      fs.writeFileSync(fd, bom + JSON.stringify(data, null, 2) + '\n', 'utf8');
+      fs.writeFileSync(fd, bom + text, 'utf8');
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);

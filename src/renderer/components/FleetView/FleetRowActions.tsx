@@ -18,6 +18,8 @@ import { paneRoleOptions } from './paneRoleOptions';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
 import { disposePanePtys } from '../../utils/paneTeardown';
+import { getLeafPanes } from '../../../shared/paneUtils';
+import { anyEditorDirty, confirmScratchDrop } from '../Editor/dirtyEditors';
 import { findParent, findPane } from '../../../shared/paneUtils';
 import { findStashedEntry } from '../../../shared/paneStash';
 import { paneLabelRejectionKey } from '../../utils/paneNaming';
@@ -106,8 +108,11 @@ export function closeFleetPane(pane: FleetPane): void {
   const subtree = ws
     ? findPane(ws.rootPane, pane.paneId) ?? findStashedEntry(ws.stashedPanes, pane.paneId)?.pane
     : undefined;
-  if (subtree) disposePanePtys(subtree);
-  s.closePane(pane.paneId, pane.workspaceId);
+  // Unsaved editor scratch text is lost with the pane: ask first.
+  confirmScratchDrop(!!subtree && anyEditorDirty(getLeafPanes(subtree)), () => {
+    if (subtree) disposePanePtys(subtree);
+    s.closePane(pane.paneId, pane.workspaceId);
+  });
 }
 
 /** Stash a visible pane or bring a stashed one back. */

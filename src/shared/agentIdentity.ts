@@ -52,7 +52,7 @@
  * agent, and its status comes from the screen only. The shared hook path
  * (`src/shared/hooks/hookFlavours.ts`, #1904 item 2) serves a subset of these.
  */
-export type AgentHooksFlavour = 'claude' | 'openclaude' | 'codex' | 'opencode' | 'kiro' | 'gemini' | 'copilot' | 'qwen';
+export type AgentHooksFlavour = 'claude' | 'openclaude' | 'codex' | 'opencode' | 'kiro' | 'gemini' | 'copilot' | 'qwen' | 'omp' | 'jcode';
 
 /**
  * The family of terminal dialogs an agent draws: Claude Code's permission
@@ -886,6 +886,31 @@ export const AGENT_IDENTITIES = [
         ],
       },
     },
+  },
+  {
+    // Oh My Pi (`omp`, @oh-my-pi/pi-coding-agent 19.2.1, package.json `bin`:
+    // { "omp": "dist/cli.js" }). It loads no hook commands from a config file;
+    // its status comes from the wmux extension `wmux setup-hooks --agent omp`
+    // writes to ~/.omp/agent/extensions/ (integrations/omp), which runs the
+    // shared bridge per lifecycle event (#3276).
+    slug: 'omp',
+    display: 'Oh My Pi',
+    roleBinding: false,
+    process: { packages: ['@oh-my-pi/pi-coding-agent'] },
+    hooks: 'omp',
+  },
+  {
+    // jcode (https://github.com/1jehuang/jcode), a Rust agent harness. Its
+    // observer hooks in ~/.jcode/config.toml `[hooks]` (docs/HOOKS.md) run
+    // integrations/jcode/bin/wmux-jcode-bridge.mjs, which feeds the shared
+    // bridge (#3067). A bare `jcode --resume` opens its session picker
+    // (docs/RESUME_BEHAVIOR.md); its ids (`session_<name>_<ms>_<hex>`) are
+    // not UUIDs and no launch flag sets one, so wmux offers the picker only.
+    slug: 'jcode',
+    display: 'jcode',
+    roleBinding: false,
+    resume: { picker: '--resume', idFormat: 'picker-only' },
+    hooks: 'jcode',
   },
   {
     // Cursor CLI. https://cursor.com/docs/cli/reference/parameters and

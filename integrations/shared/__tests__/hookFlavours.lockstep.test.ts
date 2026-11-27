@@ -119,7 +119,8 @@ describe('hook flavours — TS table ↔ bridge table', () => {
     for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
       for (const [event, rule] of Object.entries(COMPAT_HOOK_FLAVOURS[id].events)) {
         if (rule.kind !== 'agent.awaiting_input') continue;
-        expect(['PermissionRequest', 'Notification'], `${id}:${event}`).toContain(event);
+        // omp names its approval prompt tool_approval_requested.
+        expect(['PermissionRequest', 'Notification', 'tool_approval_requested'], `${id}:${event}`).toContain(event);
         if (event === 'Notification') expect(rule.when, `${id}:${event}`).toBeDefined();
       }
     }

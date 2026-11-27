@@ -861,3 +861,35 @@ describe('ChannelStateWriter', () => {
     });
   });
 });
+
+// #3247: an unreadable channels.json must not read as an empty, unstamped state.
+describe('ChannelStateWriter.loadWithStatus', () => {
+  const file = () => path.join(tmpDir, 'channels.json');
+
+  it('reports missing when nothing is on disk', () => {
+    const result = writer.loadWithStatus();
+    expect(result.status).toBe('missing');
+    expect(result.state.channels).toEqual([]);
+  });
+
+  it('reports unreadable when the primary does not parse and there is no backup', () => {
+    fs.writeFileSync(file(), '{ not json');
+    const result = writer.loadWithStatus();
+    expect(result.status).toBe('unreadable');
+    expect(result.state.channels).toEqual([]);
+    expect(fs.existsSync(file())).toBe(true);
+  });
+
+  it('reports unreadable when the read quarantines a primary that fails validation', () => {
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, channels: 'nope' }));
+    expect(writer.loadWithStatus().status).toBe('unreadable');
+  });
+
+  it('reports loaded when a bad primary falls back to a good backup', () => {
+    fs.writeFileSync(file(), '{ not json');
+    fs.writeFileSync(`${file()}.bak`, JSON.stringify(makeState([makeChannel()])));
+    const result = writer.loadWithStatus();
+    expect(result.status).toBe('loaded');
+    expect(result.state.channels.map((c) => c.id)).toEqual(['ch-test-1']);
+  });
+});

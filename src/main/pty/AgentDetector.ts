@@ -1238,6 +1238,8 @@ export class AgentDetector {
   private trustedAgent: AgentSlug | null = null;
   private identityEpoch = 0;
   private identityBoundaryAt = 0;
+  /** Arrival time of the chunk `feed` is reading, when its caller passed one. */
+  private feedAt: number | null = null;
   private approvalOutputRevision = 0;
   private approvalScreenGeneration = 0;
   private approvalHintTail = '';
@@ -1482,7 +1484,7 @@ export class AgentDetector {
     this.identityEpoch++;
     // Keep time monotonic if the wall clock moves backwards. Epoch is the
     // authority for process probes; hook timestamps additionally use this.
-    this.identityBoundaryAt = Math.max(this.identityBoundaryAt, Date.now());
+    this.identityBoundaryAt = Math.max(this.identityBoundaryAt, this.now());
   }
 
   /**
@@ -1500,7 +1502,7 @@ export class AgentDetector {
    * dropped from the front, and past CRITICAL_SEEN_MAX the oldest go too.
    */
   private admitCritical(key: string): boolean {
-    const now = Date.now();
+    const now = this.now();
     // A time ahead of the clock (it was set back) counts as expired.
     const fresh = (at: number): boolean => at <= now && now - at < CRITICAL_REPEAT_WINDOW_MS;
     const last = this.criticalSeen.get(key);
@@ -1514,7 +1516,24 @@ export class AgentDetector {
     return true;
   }
 
-  feed(data: string): void {
+  /**
+   * `at`: when this output arrived, for a caller that analyses it later than
+   * that (the daemon's bridge forwards a chunk first and reads it after). The
+   * times this feed records (identity boundary, approval hint, critical
+   * dedup) are then the chunk's own, as if it had been read on arrival.
+   */
+  feed(data: string, at?: number): void {
+    const previous = this.feedAt;
+    this.feedAt = at ?? null;
+    try { this.feedChunk(data); } finally { this.feedAt = previous; }
+  }
+
+  /** The clock of the feed in progress: its chunk's arrival time when the caller gave one. */
+  private now(): number {
+    return this.feedAt ?? Date.now();
+  }
+
+  private feedChunk(data: string): void {
     if (data) this.approvalOutputRevision++;
     const text = this.shellBoundaryBuffer + data;
     this.shellBoundaryBuffer = '';
@@ -1604,7 +1623,7 @@ export class AgentDetector {
       // Only newly drawn text refreshes freshness. Retaining an old question
       // in the tail across a title update must not make it recent again.
       if (match.index + match[0].length > previousLength) {
-        this.approvalHintAt = Date.now();
+        this.approvalHintAt = this.now();
         // A question drawn after an identity change belongs to whoever owns
         // the pane next: the next seed keeps it, as before the change.
         this.approvalEvidenceRetired = false;

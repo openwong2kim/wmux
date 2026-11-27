@@ -28,7 +28,7 @@ import { electronSecretCrypto, type SecretCrypto, type SecretCryptoState } from 
 import { getAccountStore, getAccountsPath, isAccessibleDir, VENDOR_ENV_KEYS, type Account } from './accountStore';
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { isRedactableSecretValue, setRedactedAccountVault } from '../factory/secretRedaction';
-import { agentRow } from '../../shared/agentIdentity';
+import { isContinueSignInName, VENDOR_AUTH_NAMES } from '../../shared/agentAuthNames';
 
 export const ACCOUNT_VAULT_FILE_VERSION = 1 as const;
 
@@ -84,14 +84,6 @@ export interface AccountVaultOptions {
 
 const ACCOUNT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
-/** Sign-in variables each vendor's CLI reads (envFor). */
-const VENDOR_AUTH_NAMES: ReadonlyMap<string, 'claude' | 'codex'> = new Map([
-  ['ANTHROPIC_API_KEY', 'claude'],
-  ['ANTHROPIC_AUTH_TOKEN', 'claude'],
-  ['CLAUDE_CODE_OAUTH_TOKEN', 'claude'],
-  ['OPENAI_API_KEY', 'codex'],
-  ['CODEX_API_KEY', 'codex'],
-]);
 
 /** The vendor whose CLI reads this sign-in variable, if it is one. */
 export function vendorOfAuthName(name: string): 'claude' | 'codex' | undefined {
@@ -378,13 +370,6 @@ export function withAccountFolderEnv(env: Record<string, string> | undefined, ac
   const next = Object.fromEntries(Object.entries(env ?? {}).filter(([name]) => name.toUpperCase() !== key));
   next[key] = account.configDir;
   return next;
-}
-
-/** A sign-in variable of the vendor whose conversation can move between
- *  accounts (its agent row's `continueOnAccount`: Claude), so one a pane
- *  spawned with keeps it on its account over a same-pane move. */
-function isContinueSignInName(name: string): boolean {
-  return agentRow(VENDOR_AUTH_NAMES.get(name))?.continueOnAccount === true;
 }
 
 /** Panes of this main run whose spawn got a Claude sign-in value from a vault. */

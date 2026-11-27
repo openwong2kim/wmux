@@ -10,6 +10,7 @@ import {
   readWithBackupFallbackSync,
   rotateBackups,
   rotateBackupsSync,
+  stateSlotsOnDisk,
 } from '../rotation';
 import { atomicWriteJSON } from '../core';
 
@@ -344,5 +345,36 @@ describe('readWithBackupFallbackSync', () => {
 
     expect(result?.path).toBe(`${targetPath}.bak.2`);
     expect(result?.data).toEqual({ src: 'bak-2' });
+  });
+});
+
+// #3247: only a slot that is provably absent may read as "nothing on disk".
+describe('stateSlotsOnDisk', () => {
+  it('is false when no slot exists, and when a path component is a file (ENOTDIR)', () => {
+    expect(stateSlotsOnDisk(targetPath)).toBe(false);
+    fs.writeFileSync(path.join(tmpDir, 'plain'), 'x');
+    expect(stateSlotsOnDisk(path.join(tmpDir, 'plain', 'data.json'))).toBe(false);
+  });
+
+  it('is true for a backup slot alone', () => {
+    fs.writeFileSync(`${targetPath}.bak.2`, '{}');
+    expect(stateSlotsOnDisk(targetPath)).toBe(true);
+  });
+
+  it('is true when quarantine kept a copy of the primary', () => {
+    fs.mkdirSync(path.join(tmpDir, 'corrupted'));
+    fs.writeFileSync(path.join(tmpDir, 'corrupted', 'data.json.1795682900082.bak'), '{');
+    expect(stateSlotsOnDisk(targetPath)).toBe(true);
+  });
+
+  it('is true when the slot cannot be stat-ed for a reason other than absence', () => {
+    const lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(() => {
+      throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    });
+    try {
+      expect(stateSlotsOnDisk(targetPath)).toBe(true);
+    } finally {
+      lstat.mockRestore();
+    }
   });
 });

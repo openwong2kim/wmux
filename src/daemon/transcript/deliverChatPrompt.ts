@@ -1,6 +1,6 @@
 import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from '../sessionPromptDelivery';
 import type { ChatSendResult } from '../../shared/transcript/turnEvents';
-import { screenBlocksChatSend, titleShowsRunningTurn } from './chatScreenGate';
+import { claudeSurveyOver, screenBlocksChatSend, titleShowsRunningTurn } from './chatScreenGate';
 import { quoteImagePathForPty } from '../../shared/imagePaste';
 import { UNKNOWN_CELL } from '../sessionTextReplay';
 
@@ -43,6 +43,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   steer?: boolean;
   /** Why a `blocked` answer came from the screen: a dialog on it, or no composer at all. */
   onScreenHold?: (why: 'dialog' | 'no-composer') => void;
+  /** A `blocked` answer came from Claude's session survey over the composer (a digit would answer it). */
+  onSurvey?: () => void;
   /** An `unconfirmed` answer came from cells of the composer the screen read could not see, not from a draft. */
   onInputUnseen?: () => void;
   /** The pane's latest window title and when it was set (`at` 0 = never). */
@@ -68,6 +70,15 @@ export async function deliverChatPrompt(
   let rows: ChatScreenRows | null = null;
   try { rows = await deps.readScreen(); } catch { /* unreadable = refuse */ }
   if (screenBlocksChatSend(rows)) { deps.onScreenHold?.('dialog'); return 'blocked'; }
+  // Claude's session survey sits over an empty composer and takes a digit
+  // typed there: a prompt starting with one would answer it. It is a dialog
+  // to wait out, the same way the delivery gate (readClaude) waits it out.
+  // (Only Claude draws it, over its own `❯` prompt row: the layout names the agent.)
+  if (rows && claudeSurveyOver(rows, claudePromptRow(rows))) {
+    deps.onSurvey?.();
+    deps.onScreenHold?.('dialog');
+    return 'blocked';
+  }
   // Claude restores the submitted draft after an interrupted turn. Idle alone
   // cannot prove its input is empty; pasting here could concatenate two tasks.
   // Mid-turn, a draft typed in Terminal would be joined the same way. Only the
@@ -196,6 +207,17 @@ export function claudeComposerEmpty(rows: ChatScreenRows | null): boolean {
   const empty = /^❯(?: Try "[^"]*")?$/.test(tail[at] ?? '') || /^❯$/.test(rows.undimmed?.[at]?.trim() ?? '');
   return at > 0 && empty && claudeTopRule(rows, at, at + 1) && claudeRule(tail[at + 1]) && !unseenFrom(rows, at - 1);
 }
+
+/** The last row that is Claude's prompt row (`❯`), or -1. */
+function claudePromptRow(rows: readonly string[]): number {
+  let at = -1;
+  rows.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row.trim())) at = index; });
+  return at;
+}
+
+/** A chat send refused because Claude's session survey is up: what the person is told. */
+export const SURVEY_CHAT_DETAIL =
+  "Claude is showing its session survey (\"How is Claude doing this session?\"). Answer or dismiss it in the terminal first";
 
 /** A chat send refused because the composer could not be seen whole: what the person is told. */
 export const UNSEEN_INPUT_CHAT_DETAIL =

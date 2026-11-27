@@ -261,6 +261,8 @@ function removeCodexHooksBlock(home: string): Result {
 function removeOwnedHookFile(flavour: (typeof COMPAT_HOOK_FLAVOUR_IDS)[number], opts: RemoveAgentIntegrationsOptions): Result {
   const outcome = removeCompatHooks(flavour, resolveCompatHookPaths(opts.home, opts.startDir, opts.env ?? process.env));
   if (outcome.removed) return REMOVED;
+  // A TOML file wmux could not edit without losing its layout: left as is.
+  if (outcome.manualLines) return { outcome: 'failed', detail: `edit by hand: ${outcome.manualLines.join('; ')}` };
   if (outcome.before === 'foreign') return NOT_WMUX;
   if (outcome.before === 'malformed') return CORRUPT;
   return outcome.error ? { outcome: 'failed', detail: outcome.error } : NOT_PRESENT;
@@ -373,9 +375,11 @@ function planSteps(opts: RemoveAgentIntegrationsOptions): Step[] {
 
   const compatPaths = resolveCompatHookPaths(home, opts.startDir, env);
   for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
-    if (COMPAT_HOOK_FLAVOURS[id].install?.strategy !== 'owned-file') continue;
+    const strategy = COMPAT_HOOK_FLAVOURS[id].install?.strategy;
+    if (strategy !== 'owned-file' && strategy !== 'owned-module' && strategy !== 'toml-hooks') continue;
     const file = compatHookConfigPath(id, compatPaths) ?? '';
-    steps.push({ agent: agentRow(id)?.display ?? id, item: 'hook file', path: file, sharedSlot: true, run: () => removeOwnedHookFile(id, opts) });
+    // removeCompatHooks deletes a module only when its first line is wmux's marker.
+    steps.push({ agent: agentRow(id)?.display ?? id, item: strategy === 'owned-module' ? 'extension module' : strategy === 'toml-hooks' ? 'hook commands' : 'hook file', path: file, sharedSlot: true, run: () => removeOwnedHookFile(id, opts) });
   }
 
   // The list entry first: OpenCode fails to load a listed plugin that is gone.

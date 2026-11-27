@@ -93,9 +93,9 @@ export const createWorkspaceGroupSlice: StateCreator<
     }
     const group = state.workspaceGroups.find((g) => g.id === groupId);
     if (!group) return;
+    // A folded group stays folded (#3273): its open or folded state is the
+    // owner's, and the header's count rising shows where the row went.
     ws.groupId = groupId;
-    // The row must not vanish into a folded header: show where it went.
-    delete group.collapsed;
   }),
 
   setWorkspaceGroupRenaming: (groupId) => set((state: StoreState) => {

@@ -1,23 +1,41 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
-import { Fragment, useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import { keepSubmenuInWindow } from '../../utils/keepSubmenuInWindow';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
+import { agentRow } from '../../../shared/agentIdentity';
+import { useStore } from '../../stores';
+import { useDaemonModeActive } from '../../hooks/useDaemonMode';
+import { collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
+import { continueOutcomeToast, continuePaneOnAccount } from '../Pane/usePaneContinueOnAccount';
+import {
+  accountSignInMark, beginSwitch, endSwitch, isAlready, isSkip, noteContinuedBeside, NOT_SIGNED_IN, paneWslMap, subscribeSwitchRunning,
+  switchRunning, switchWorkspacePanes, tallySwitch, wasContinuedBeside, workspaceContinuePanes, workspaceRunsInWsl,
+} from './switchWorkspacePanes';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = Account & { status: CredentialStatus; tokenSignIn?: { createdAt: number; usable: boolean } };
 
+/** The workspace's terminal panes, and which of them run in WSL now (a fresh read of the daemon's list). */
+async function readWslPanes(workspaceId: string): Promise<Record<string, boolean>> {
+  const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
+  const ptyIds = ws ? collectWorkspaceTerminalSurfaces(ws).map((x) => x.ptyId).filter(Boolean) : [];
+  if (ptyIds.length === 0 || !window.electronAPI?.pty?.list) return paneWslMap(ptyIds, []);
+  return paneWslMap(ptyIds, await window.electronAPI.pty.list());
+}
+
 /**
- * Workspace right-click → per-vendor account submenu (M1: BIND ONLY).
+ * Workspace right-click → per-vendor account submenu.
  *
  * Selecting an account updates the workspace binding; already-running terminals
  * keep their spawn-time account (per-PTY generation) and only NEW terminals use
- * the new account. The "Switch now" action (respawn live panes) is M3 and not
- * offered here — the footer states the bind-only semantics so the user is not
- * surprised that open panes don't change.
+ * the new account, as the footer says. For an agent that can continue on
+ * another account (Claude), the footer also offers "Switch open panes": after a
+ * confirm it continues each open pane of that agent on the bound account
+ * (switchWorkspacePanes.ts). It never runs on its own.
  */
 export default function WorkspaceAccountMenu({
   workspaceId,
@@ -31,6 +49,22 @@ export default function WorkspaceAccountMenu({
   const [bindings, setBindings] = useState<Partial<Record<Vendor, string>>>({});
   const [openVendor, setOpenVendor] = useState<Vendor | null>(null);
   const [loaded, setLoaded] = useState(false);
+  /** Per open pane: it runs in WSL, where an account's Windows sign-in says nothing. */
+  const [wslPanes, setWslPanes] = useState<Record<string, boolean>>({});
+  /** All the workspace's panes run in WSL (or, none open, a new one would). */
+  const [inWsl, setInWsl] = useState(false);
+  /** The vendor whose "switch open panes" confirm row is showing. */
+  const [confirming, setConfirming] = useState<Vendor | null>(null);
+  const switching = useSyncExternalStore(subscribeSwitchRunning, () => switchRunning(workspaceId));
+  const daemon = useDaemonModeActive();
+  // Each vendor's open panes that can continue, as "<vendor> <ptyId>" lines:
+  // a string, so the selector's value is stable between renders.
+  const continuePaneLines = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return '';
+    return (['claude', 'codex'] as const)
+      .flatMap((v) => workspaceContinuePanes(ws, s.surfaceAgent, v).map((p) => `${v} ${p.ptyId}`)).join('\n');
+  });
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
@@ -40,15 +74,85 @@ export default function WorkspaceAccountMenu({
       setBindings(res.bindings[workspaceId] ?? {});
       setLoaded(true);
     }).catch(() => setLoaded(true));
+    void readWslPanes(workspaceId).then((wsl) => {
+      setWslPanes(wsl);
+      setInWsl(workspaceRunsInWsl(wsl, useStore.getState().defaultShell));
+    }).catch(() => { setWslPanes({}); setInWsl(false); });
   }, [workspaceId]);
 
   useEffect(() => { reload(); }, [reload]);
 
   const bind = useCallback((vendor: Vendor, accountId: string | undefined) => {
     const api = window.electronAPI?.accounts;
-    if (!api) return;
+    if (!api || switchRunning(workspaceId)) return;
+    setConfirming(null);
     void api.setBinding({ workspaceId, vendor, accountId }).then(reload).catch(() => { /* surfaced by useIpc */ });
   }, [workspaceId, reload]);
+
+  // Bind (again) and continue each open pane of the vendor's agent on the
+  // account, one at a time. A pane that fails or is skipped never stops the
+  // rest, and the binding stays changed.
+  const switchPanes = useCallback(async (vendor: Vendor, account: AccountRow) => {
+    const api = window.electronAPI?.accounts;
+    setConfirming(null);
+    if (!api || !beginSwitch(workspaceId)) return;
+    const { pushToast } = useStore.getState();
+    try {
+      try {
+        await api.setBinding({ workspaceId, vendor, accountId: account.id });
+      } catch {
+        pushToast({ level: 'error', message: t('accounts.switchPanesBindFailed') });
+        return;
+      }
+      reload();
+      // Which panes run in WSL now, not when the menu last rendered.
+      const wsl = await readWslPanes(workspaceId).catch(() => ({} as Record<string, boolean>));
+      const st = useStore.getState();
+      const ws = st.workspaces.find((w) => w.id === workspaceId);
+      const panes = ws ? workspaceContinuePanes(ws, st.surfaceAgent, vendor) : [];
+      // A native pane needs the account signed in on Windows (or a token),
+      // as the pane menu requires; a WSL pane signs in on its home there.
+      const windowsSignIn = accountSignInMark(account, false) === 'in';
+      // Still in the workspace and still the vendor's agent, right before its step.
+      const stillThere = (ptyId: string) => {
+        const now = useStore.getState();
+        const w = now.workspaces.find((x) => x.id === workspaceId);
+        return !!w && workspaceContinuePanes(w, now.surfaceAgent, vendor).some((p) => p.ptyId === ptyId);
+      };
+      const results = await switchWorkspacePanes(panes, async (ptyId) => {
+        // Already continued beside on this account: the copy exists there.
+        if (wasContinuedBeside(workspaceId, account.id, ptyId)) return { kind: 'refused', code: 'same_account' };
+        if (!windowsSignIn && !wsl[ptyId]) return { kind: 'refused', code: NOT_SIGNED_IN };
+        const outcome = await continuePaneOnAccount(ptyId, account.id, workspaceId);
+        if (outcome.kind === 'new_pane') noteContinuedBeside(workspaceId, account.id, ptyId);
+        return outcome;
+      }, stillThere);
+      for (const r of results) {
+        const { kind } = r.outcome;
+        if (kind === 'done' || kind === 'new_pane' || isAlready(r.outcome)) continue;
+        const toast = r.outcome.kind === 'refused' && r.outcome.code === NOT_SIGNED_IN
+          ? { level: 'warn' as const, message: t('accounts.notLoggedIn') }
+          : continueOutcomeToast(r.outcome, account.name, t);
+        // Skipped panes are as they were: a warning. Anything else is an error.
+        pushToast({ ...toast, level: isSkip(r.outcome) ? 'warn' : 'error', message: `${r.title}: ${toast.message}` });
+      }
+      const n = tallySwitch(results);
+      const summary = t('accounts.switchPanesSummary', {
+        name: account.name, switched: String(n.switched), already: String(n.already), opened: String(n.opened),
+        skipped: String(n.skipped), failed: String(n.failed),
+      });
+      // "Now uses" only while it still does: the binding may have changed during the run.
+      const stillBound = n.failed > 0
+        ? await api.list().then((res) => res.bindings[workspaceId]?.[vendor] === account.id).catch(() => false)
+        : false;
+      pushToast({
+        level: n.failed > 0 ? 'warn' : 'info',
+        message: stillBound ? `${summary} ${t('accounts.switchPanesBindingKept', { name: account.name })}` : summary,
+      });
+    } finally {
+      endSwitch(workspaceId);
+    }
+  }, [workspaceId, reload, t]);
 
   // Hide entirely when the preload doesn't expose accounts (older build) or no
   // accounts of any vendor are registered — nothing to bind.
@@ -101,6 +205,7 @@ export default function WorkspaceAccountMenu({
                   className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors hover:bg-[var(--bg-overlay)]"
                   style={{ color: 'var(--text-main)' }}
                   onClick={() => bind(vendor, undefined)}
+                  disabled={switching}
                 >
                   <span className="w-3 shrink-0 text-[var(--accent)]">{!boundId ? '●' : ''}</span>
                   <span className="text-[var(--text-muted)]">{t('accounts.defaultAccount')}</span>
@@ -117,32 +222,74 @@ export default function WorkspaceAccountMenu({
                       {group || t('accounts.noGroup')}
                     </div>
                   )}
-                  {accounts.map((r) => (
+                  {accounts.map((r) => {
+                  const mark = accountSignInMark(r, inWsl);
+                  return (
                   <button
                     key={r.id}
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors hover:bg-[var(--bg-overlay)]"
                     style={{ color: 'var(--text-main)' }}
                     onClick={() => bind(vendor, r.id)}
-                    title={r.status.loggedIn || r.tokenSignIn?.usable
+                    disabled={switching}
+                    title={mark === 'in'
                       ? (r.status.subscriptionType ? `${r.status.subscriptionType}` : t('accounts.loggedIn'))
-                      : t('accounts.notLoggedIn')}
+                      : t(mark === 'wsl' ? 'accounts.wslSignInUnchecked' : 'accounts.notLoggedIn')}
                   >
                     <span className="w-3 shrink-0 text-[var(--accent)]">{boundId === r.id ? '●' : ''}</span>
                     <span className="truncate flex-1">{r.name}</span>
                     {/* A long-lived token signs the account's new panes in without a browser login. */}
-                    {!r.status.loggedIn && !r.tokenSignIn?.usable && (
+                    {/* In WSL the account signs in on its home in the distro, not read here: neutral. */}
+                    {mark === 'out' && (
                       <span className="text-[11px] text-[var(--accent-red)] shrink-0">{t('accounts.loggedOut')}</span>
+                    )}
+                    {mark === 'wsl' && (
+                      <span className="text-[11px] text-[var(--text-muted)] shrink-0" data-account-menu-wsl-sign-in>{t('accounts.signInInWsl')}</span>
                     )}
                     {r.status.subscriptionType && (
                       <span className="text-[11px] text-[var(--text-subtle)] shrink-0">{r.status.subscriptionType}</span>
                     )}
                   </button>
-                  ))}
+                  );
+                  })}
                   </Fragment>
                 ))}
                 <div className="px-3 pt-1 mt-1 border-t border-[var(--bg-overlay)] text-[10px] text-[var(--text-muted)] leading-snug">
                   {t('accounts.newTerminalsNote')}
                 </div>
+                {(() => {
+                  const paneIds = continuePaneLines.split('\n').filter((l) => l.startsWith(`${vendor} `)).map((l) => l.slice(vendor.length + 1));
+                  if (!bound || !daemon || paneIds.length === 0 || !agentRow(vendor)?.continueOnAccount
+                    || !window.electronAPI?.accounts?.continuePane) return null;
+                  // Panes that can take the account: all, when it is signed in on
+                  // Windows; else only the WSL ones (a native pane would be skipped).
+                  const takers = accountSignInMark(bound, false) === 'in' ? paneIds.length : paneIds.filter((id) => wslPanes[id]).length;
+                  return (
+                  confirming === vendor ? (
+                    <div className="px-3 py-1.5 text-[12px]" style={{ color: 'var(--text-main)' }} data-account-menu-switch-confirm>
+                      <div className="leading-snug">{t('accounts.switchPanesConfirm', { count: String(takers), name: bound.name })}</div>
+                      <div className="flex gap-2 mt-1.5">
+                        <button className="px-2 py-0.5 rounded text-[12px] hover:bg-[var(--bg-overlay)] text-[var(--accent)]" onClick={() => { void switchPanes(vendor, bound); }}>
+                          {t('accounts.switchPanesRun')}
+                        </button>
+                        <button className="px-2 py-0.5 rounded text-[12px] hover:bg-[var(--bg-overlay)] text-[var(--text-sub)]" onClick={() => setConfirming(null)}>
+                          {t('common.cancel')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-50"
+                      style={{ color: 'var(--text-main)' }}
+                      disabled={switching || takers === 0}
+                      title={takers === 0 ? t('accounts.notLoggedIn') : undefined}
+                      onClick={() => setConfirming(vendor)}
+                      data-account-menu-switch-panes
+                    >
+                      {t('accounts.switchPanes', { name: bound.name })}
+                    </button>
+                  )
+                  );
+                })()}
               </div>
             )}
           </div>

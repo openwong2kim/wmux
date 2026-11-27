@@ -200,6 +200,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, statusMessageFromWire } from './a2a/A2aTaskService';
+import { A2A_TASK_RETENTION_FILE, A2A_TASK_RETENTION_SWEEP_MS, parseRetentionFile, retentionMs } from '../shared/a2aTaskCleanup';
 import { parsePublicCreateTask } from './a2a/publicCreateParams';
 import { registerCompanyHoldRpc } from './a2a/companyHoldRpc';
 import { WorkTaskService } from './worktask/WorkTaskService';
@@ -212,6 +213,7 @@ import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../sh
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
 import { deliveryFrameOf } from './deliveryComposer';
 import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, releaseScreenRepairLineage, takeScreenCheckpoint } from './screenCheckpoint';
+import { startLoopSaturationMonitor } from './loopSaturation';
 import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
@@ -1358,6 +1360,8 @@ function markDaemonBoot(name: string): void {
 // hung one and skip a false-positive respawn under CPU load.
 const eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 });
 eventLoopMonitor.enable();
+// The PTY bridges analyse output inline while the loop runs late (loopSaturation.ts).
+startLoopSaturationMonitor();
 
 // Install the file log sink before any log() / console.* call below. The
 // launcher spawns this process with `stdio: 'ignore'`, so without this
@@ -2206,7 +2210,7 @@ async function recoverSessions(
   processMonitor: ProcessMonitor,
   maxRecover: number,
 ): Promise<void> {
-  const state = stateWriter.load();
+  const { status: stateLoadStatus, state } = stateWriter.loadWithStatus();
   let changed = false;
   const recoveredIds = new Set<string>();
   // No Rust terminal module: nothing can start on this boot (there is no other
@@ -2712,7 +2716,13 @@ async function recoverSessions(
       preservedBufferIds.add(session.id);
     }
   }
-  stateWriter.cleanOrphanedBuffers(preservedBufferIds);
+  // #3247: an unreadable sessions.json reads as zero sessions, which would make
+  // every .buf an orphan. Keep them until a boot that can read the file.
+  if (stateLoadStatus === 'unreadable') {
+    log('warn', `[recovery] ${stateWriter.getFilePath()} and its backups could not be read — keeping every scrollback buffer, skipping the orphan cleanup`);
+  } else {
+    stateWriter.cleanOrphanedBuffers(preservedBufferIds);
+  }
 
   if (heldCount > 0) {
     log('info', `[recovery] holding ${heldCount} restored user shell(s) for the app to start with their credentials`);
@@ -3287,7 +3297,14 @@ function registerRpcHandlers(
     // remainder alongside it or this write erases those panes — the same merge
     // the reboot-survival save in recoverSessions does.
     const liveIds = new Set(next.sessions.map((s) => s.id));
-    next.sessions.push(...stateWriter.load().sessions.filter((s) => !liveIds.has(s.id)));
+    const onDisk = stateWriter.loadWithStatus();
+    // #3247: unreadable reads as zero sessions; saving the merge would replace
+    // the file with the live panes only.
+    if (onDisk.status === 'unreadable') {
+      log('warn', `[recovery] ${stateWriter.getFilePath()} could not be read — not saving the retention restamp for ${id}`);
+      return;
+    }
+    next.sessions.push(...onDisk.state.sessions.filter((s) => !liveIds.has(s.id)));
     stateWriter.saveImmediate(next);
   };
 
@@ -7938,8 +7955,10 @@ function registerRpcHandlers(
       // Main sets this, as on a2a.task.update.
       ...(pipeServer.isFirstParty(ctx.clientId) && p.trustedLane === true ? { trustedLane: true } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
+      // A bulk cancel's dry run (#3068): the same checks, nothing written.
+      ...(p.dryRun === true ? { dryRun: true } : {}),
     });
-    if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+    if (canceled.ok && canceled.dryRun !== true && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
     return canceled;
   });
 
@@ -9368,6 +9387,27 @@ let a2aServerRef: A2aServer | null = null;
 let a2aDiscoverRef: DiscoverClient | null = null;
 let a2aDeliveryRef: A2aRemoteDelivery | null = null;
 
+/**
+ * One retention sweep (#3068): with Settings' number of days set, close each
+ * workspace's own tasks still `submitted` after that long, one log line per
+ * sweep. Off (no file, or no days) does nothing and logs nothing.
+ */
+async function sweepA2aRetention(svc: A2aTaskService): Promise<void> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(getWmuxDir(), A2A_TASK_RETENTION_FILE), 'utf-8');
+  } catch {
+    return;
+  }
+  const days = parseRetentionFile(raw);
+  if (days === null) return;
+  const { closed, refused, seen, skipped } = await svc.sweepStaleSubmitted(retentionMs(days));
+  for (const taskId of closed) {
+    if (isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+  }
+  log('info', `A2A retention sweep: closed ${closed.length} of ${seen} task(s) submitted over ${days} day(s)${refused > 0 ? `, ${refused} refused` : ''}${skipped > 0 ? `, ${skipped} changed meanwhile` : ''}`);
+}
+
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
 let channelWakeWorkerRef: ChannelWakeWorker | null = null;
 
@@ -10247,8 +10287,17 @@ async function main(): Promise<void> {
       eventsDir,
       // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입
       // 가드 포함)로 READ만 한다 — 변환은 레거시를 절대 쓰지 않는다(§6.1-2).
-      readLegacyState: () =>
-        fs.existsSync(channelsJsonPath) ? channelStateWriter.load() : null,
+      readLegacyState: () => {
+        if (!fs.existsSync(channelsJsonPath)) return null;
+        const loaded = channelStateWriter.loadWithStatus();
+        // #3247: an unreadable channels.json must not become an empty genesis.
+        // Throwing aborts the migration with the legacy file untouched; the
+        // next boot retries.
+        if (loaded.status === 'unreadable') {
+          throw new Error(`${channelsJsonPath} and its backups could not be read`);
+        }
+        return loaded.state;
+      },
       validateProjection: (d) => ChannelStateWriter.isChannelState(d),
       // 완결 직후 워터마크 스탬프 되쓰기(§6.4c pristine 창 봉합) — durable(§2.3).
       writeLegacyStamped: (stamped) => {
@@ -10271,9 +10320,15 @@ async function main(): Promise<void> {
     // 워터마크 부트 판정(§6.4c) — 기존 로그-활성 부트에서만. 신규 마이그레이션은
     // 방금 genesis를 떴으므로 다운그레이드 창이 없고, 파일 부재는 reseed 대상이 아니다.
     if (migration.detection === 'active' && fs.existsSync(channelsJsonPath)) {
-      const raw = channelStateWriter.load();
-      const verdict = evaluateWatermark(raw);
-      if (verdict.kind === 'downgrade-write') {
+      const loaded = channelStateWriter.loadWithStatus();
+      const raw = loaded.state;
+      // #3247: unreadable reads as empty with no watermark, which evaluates as a
+      // downgrade and would reseed the active snapshot with nothing. The log is
+      // canonical, so skip the reseed and leave channels.json as it is.
+      const verdict = loaded.status === 'unreadable' ? null : evaluateWatermark(raw);
+      if (verdict === null) {
+        log('warn', `${channelsJsonPath} and its backups could not be read — skipping the legacy-reseed check, file left as it is`);
+      } else if (verdict.kind === 'downgrade-write') {
         log('warn', `channels.json 구-데몬 쓰기 감지(${verdict.reason}) — legacy-reseed 수행(§6.4c)`);
         const reseed = await performReseed({
           eventsDir,
@@ -10519,6 +10574,12 @@ async function main(): Promise<void> {
         svc.gcTerminalTasks();
       }, 5 * 60 * 1000);
       a2aGcInterval.unref();
+      // Retention (#3068): off unless Settings wrote a number of days. Read on
+      // every sweep, so a change applies without a daemon restart.
+      const a2aRetentionInterval = setInterval(() => {
+        void sweepA2aRetention(svc).catch((err) => log('warn', 'A2A retention sweep failed:', err));
+      }, A2A_TASK_RETENTION_SWEEP_MS);
+      a2aRetentionInterval.unref();
       log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
     } catch (err) {
       // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
@@ -10797,6 +10858,10 @@ async function main(): Promise<void> {
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
     const configDir = typeof p.configDir === 'string' ? p.configDir : '';
     if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
+    // A sign-in variable the pane spawned with (or one not known either way)
+    // stays its sign-in over a folder move: never moved in place. main then
+    // copies only and opens a new pane on the account.
+    if (!copyOnly && sessionManager.getSession(id)?.meta.signInEnv !== false) return { ok: false, code: 'env_sign_in' };
     try {
       return await continueOnAccount({
         pane: (sid) => sessionManager.getSession(sid)?.meta,
@@ -10905,6 +10970,9 @@ async function main(): Promise<void> {
     }
   };
   pipeServer.onRpc('session.continueOnAccount', continueOnAccountRpc(false));
+  // The same move, named apart so a main that relies on the sign-in check
+  // above gets Unknown method from a daemon without it, never a move in place.
+  pipeServer.onRpc('session.continueOnAccountV2', continueOnAccountRpc(false));
   // A method of its own, so a daemon without it answers Unknown method and
   // never moves the pane in place.
   pipeServer.onRpc('session.copyToAccountV1', continueOnAccountRpc(true));
