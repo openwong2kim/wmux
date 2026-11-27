@@ -509,8 +509,8 @@ const OSC_DROPPED: &[u8] = b"\x18";
 struct OscCap {
     /// What the bytes passed on so far leave.
     scan: OscScan,
-    /// The open OSC (OscScan::Osc), from its ESC, or from its `]` when its
-    /// ESC went on already.
+    /// The open OSC (OscScan::Osc), from its `]`: its ESC and any filler
+    /// went on before it.
     held: Vec<u8>,
     /// The held OSC's introducer: its first `intro` bytes, up to its `]`.
     intro: usize,
@@ -581,7 +581,11 @@ impl OscCap {
                         i = at;
                         continue;
                     }
-                    (esc, at, OscScan::Text)
+                    // Its ESC and the filler after it go on with the bytes
+                    // before: vte executes the filler's controls where they
+                    // stand, before any resize that comes ahead of the OSC's
+                    // end (#3466). Only its `]` and body are held.
+                    (at, at, OscScan::EscPassed)
                 }
                 OscScan::EscPassed => {
                     let at = past_filler(bytes, i);
@@ -688,8 +692,8 @@ impl OscCap {
         Ok(())
     }
 
-    /// An OSC is dropped: its introducer (from its ESC, or its `]` when the
-    /// ESC went on already) goes on, then OSC_DROPPED. A refused introducer
+    /// An OSC is dropped: its introducer (its `]`, the ESC having gone on
+    /// before it) goes on, then OSC_DROPPED. A refused introducer
     /// changes nothing.
     fn drop_osc(
         &mut self,
@@ -1567,6 +1571,30 @@ impl XtermFeed {
             self.refuse(c1.is_some_and(|c1| c1 < at), C1);
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
+                    // Both parsers execute a C0 control inside a sequence
+                    // where it stands, leaving the sequence's state as it
+                    // was: run the held one's now, so a resize before its
+                    // end comes after them (#3466), and hold the rest. The
+                    // ESC goes first: it ends a string it stands in (an OSC,
+                    // say), where vte ignores a C0 control, as xterm ends it
+                    // there. vte ignores the ESC again when it is replayed.
+                    if data[at + 1..].iter().any(|&b| b < 0x20) {
+                        parser.advance(term, &data[from..=at]);
+                        from = at;
+                        self.refuse(self.round_trip, ROUND_TRIP);
+                        let (mut read, mut kept) = (at + 1, at + 1);
+                        while read < data.len() {
+                            let b = data[read];
+                            if b < 0x20 {
+                                parser.advance(term, &[b]);
+                            } else {
+                                data[kept] = b;
+                                kept += 1;
+                            }
+                            read += 1;
+                        }
+                        data.truncate(kept);
+                    }
                     self.hold(&mut data, at);
                 } else {
                     self.refuse(true, LONG_SEQUENCE);
@@ -2132,7 +2160,8 @@ fn soft_reset_like_xterm(term: &mut Term<VoidListener>) {
 /// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
 /// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
 /// DEL between the ESC and its final byte. An ESC still waiting for that byte
-/// at the end of `bytes` waits in `held` with what follows it, up to
+/// at the end of `bytes` goes to the parser, which ends a string it stands
+/// in, and waits in `held` with the DEL after it, the C0 controls run, up to
 /// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
 ///
 /// A refused join returns before anything is parsed; nothing else allocates.
@@ -2164,9 +2193,21 @@ fn advance_indexing(
         }
         match bytes.get(end) {
             None if bytes.len() - esc <= MAX_HELD => {
-                parser.advance(term, &bytes[from..esc]);
-                // Within the MAX_HELD room reserved above.
-                held.extend_from_slice(&bytes[esc..]);
+                // The ESC goes on, ending a string it stands in, where vte
+                // ignores a C0 control; replayed, vte ignores it.
+                parser.advance(term, &bytes[from..=esc]);
+                // The C0 controls after it run now, where both parsers run
+                // them, so a resize before its final byte comes after them
+                // (#3466); the ESC and any DEL wait, within the MAX_HELD
+                // room reserved above.
+                held.push(0x1b);
+                for &b in &bytes[esc + 1..] {
+                    if b == 0x7f {
+                        held.push(b);
+                    } else {
+                        parser.advance(term, &[b]);
+                    }
+                }
                 return Ok(());
             }
             None => break,
@@ -5800,7 +5841,7 @@ mod osc_cap_tests {
         assert!(cap.held.is_empty(), "nothing held");
         assert_eq!(cap.scan, OscScan::Text);
         cap.scan(b"ab\x1b]2;t", &mut emit).unwrap();
-        assert_eq!(cap.held, b"\x1b]2;t");
+        assert_eq!(cap.held, b"]2;t");
         // A refused flush leaves the OSC held as it was.
         let mut refused = |_: &[u8], _: bool| {
             Err(AllocFailed {
@@ -5809,7 +5850,7 @@ mod osc_cap_tests {
             })
         };
         assert!(cap.scan(b"itle\x07c", &mut refused).is_err());
-        assert_eq!(cap.held, b"\x1b]2;t");
+        assert_eq!(cap.held, b"]2;t");
         assert_eq!(cap.scan, OscScan::Osc);
         let mut out2 = Vec::new();
         cap.scan(b"itle\x07c", &mut |part, _| {
@@ -5817,8 +5858,8 @@ mod osc_cap_tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(out, b"ab");
-        assert_eq!(out2, b"\x1b]2;title\x07c");
+        assert_eq!(out, b"ab\x1b");
+        assert_eq!(out2, b"]2;title\x07c");
     }
 
     /// What `feeds` pass on with the `nth` emit of the last feed refused
@@ -5883,7 +5924,8 @@ mod osc_cap_tests {
 
     #[test]
     fn a_held_osc_keeps_its_opener_until_the_opener_went_on() {
-        // The opener holds an LF, which vte executes in its escape state.
+        // The LF in the opener, which vte executes in its escape state, went
+        // on with the first feed; the `]` is held.
         let big = body(MAX_OSC_BODY + 1);
         let rest = [big.as_slice(), b"\x07b"].concat();
         let feeds: [&[u8]; 2] = [b"a\x1b\n]0;", &rest];
@@ -5938,6 +5980,48 @@ mod osc_cap_tests {
         let unrefused = xterm_retried(&feeds, false);
         assert_eq!(unrefused.0, ["a", " b"], "the LF went on");
         assert_eq!(xterm_retried(&feeds, true), unrefused);
+    }
+
+    #[test]
+    fn controls_in_a_sequence_a_feed_ends_in_run_before_a_resize() {
+        // Two rows, no history: the LF scrolls `a` out at the old size, as
+        // when the stream is fed whole before the resize (#3466).
+        for xterm in [false, true] {
+            for (first, rest) in [
+                (b"a\r\nb\x1b\n]2;t".as_slice(), b"\x07".as_slice()),
+                (b"a\r\nb\x1b[3\n".as_slice(), b"1m".as_slice()),
+                // The ESC ends the OSC before the LF, which vte ignores in it.
+                (b"a\r\nb\x1b]2;t\x1b\n".as_slice(), b"[31m".as_slice()),
+            ] {
+                let feed = |terminal: &mut NativeTerminal, bytes: &[u8]| {
+                    if xterm {
+                        terminal.feed_xterm_bytes(bytes, 0).unwrap();
+                    } else {
+                        terminal.feed_bytes(bytes).unwrap();
+                    }
+                };
+                let mut split = NativeTerminal::create(20, 2, 0).unwrap();
+                feed(&mut split, first);
+                split.resize_grid(20, 3).unwrap();
+                feed(&mut split, rest);
+                let mut whole = NativeTerminal::create(20, 2, 0).unwrap();
+                feed(&mut whole, &[first, rest].concat());
+                whole.resize_grid(20, 3).unwrap();
+                let shown = text(&mut split);
+                assert_eq!(shown, text(&mut whole), "xterm {xterm}: {first:?}");
+                assert!(!shown.iter().any(|row| row.contains('a')), "{shown:?}");
+            }
+            // Split there with no resize, as unsplit.
+            let mut split = NativeTerminal::create(20, 3, 0).unwrap();
+            for bytes in [b"a\x1b]2;old\x1b\n".as_slice(), b"[31mb"] {
+                if xterm {
+                    split.feed_xterm_bytes(bytes, 0).unwrap();
+                } else {
+                    split.feed_bytes(bytes).unwrap();
+                }
+            }
+            assert_eq!(text(&mut split), ["a", " b"], "xterm {xterm}");
+        }
     }
 
     #[test]
