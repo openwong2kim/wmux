@@ -21,7 +21,7 @@ import {
   unseenFrom,
   type ChatScreenRows,
 } from './transcript/deliverChatPrompt';
-import { screenBlocksChatSend } from './transcript/chatScreenGate';
+import { claudeSurveyOver, screenBlocksChatSend } from './transcript/chatScreenGate';
 
 export type DeliveryPhase = 'paste' | 'enter';
 
@@ -54,10 +54,6 @@ const CLAUDE_LABELLED_RULE = /^─{8,} \S(?:.*\S)? ─+$/;
 const CLAUDE_PROMPT = /^([❯!#])(?:[ \u00a0]|$)/;
 /** The hint Claude draws under the composer in a mode (`  ! for shell mode`). */
 const CLAUDE_MODE_HINT = /^\s*(?:! for (?:shell|bash) mode|# to memorize)\b/;
-/** The session survey's choices (`1: Bad    2: Fine   3: Good   0: Dismiss`): it takes a digit typed at an empty prompt. */
-const CLAUDE_SURVEY_CHOICES = /\b1: Bad\s+2: Fine\s+3: Good\s+0: Dismiss\b/;
-/** How far above the composer's top rule the survey is looked for (its choices, a blank row, a notice row). */
-const CLAUDE_SURVEY_ROWS = 4;
 
 function lastIndex(rows: readonly string[], test: (row: string) => boolean): number {
   for (let i = rows.length - 1; i >= 0; i--) if (test(rows[i])) return i;
@@ -119,7 +115,7 @@ function readClaudeRows(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRea
   // The survey draws over the composer's top rule, so the rows right above it
   // decide too. It takes a digit at an empty prompt only: at the Enter the
   // prompt holds this delivery's paste, and the Enter submits it.
-  const survey = phase === 'paste' && rows.slice(Math.max(0, from - 1 - CLAUDE_SURVEY_ROWS), from - 1).some((row) => CLAUDE_SURVEY_CHOICES.test(row));
+  const survey = phase === 'paste' && claudeSurveyOver(rows, from);
   if (glyph !== '❯' || survey || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };
   // The composer alone, from its top rule to its closing rule.
